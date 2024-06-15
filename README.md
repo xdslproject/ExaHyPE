@@ -1,2 +1,6 @@
-# ExaHyPE
-ExaHyPE is an open source simulation engine to solve hyperbolic PDE systems
+# ExaHyPE xDSL stencil compiler, dialect and transformations
+
+A prototype Python compiler for the ExaHype stencil domain specific language (DSL) that leverages the ExCALIBUR DSL (xDSL) Python MLIR compiler framework.
+
+## Installation / prerequisites
+
