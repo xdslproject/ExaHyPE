@@ -1,49 +1,66 @@
+import numpy as np
 from sympy import *
 from sympy.utilities.codegen import codegen
 from sympy.codegen.ast import Assignment
 from sympy.utilities.autowrap import autowrap, CythonCodeWrapper
 
-class c_printer:
+class cpp_printer:
     def __init__(self,kernel):
         # self = kernel
-        all_items = {'i':Idx('i',kernel.patchsize),'j':Idx('j',kernel.patchsize),'k':Idx('k',kernel.patchsize),'patch':Idx('patch',kernel.n_patches)}
-        self.lines = []
-        file = open('test.cpp','w')
+        self.code = f'void time_step(double* {kernel.input})' + ' {\n'
+        self.INDENT = 0
 
-        # PATCH,I,J,K = symbols('PATCH I J K',cls=Idx)
-        default_shape = ([kernel.n_patches] + [kernel.patchsize for _ in range(kernel.dim)])
-        halo_shape = ([kernel.n_patches] + [kernel.patchsize + kernel.halosize for _ in range(kernel.dim)])
+        self.n_patches = kernel.n_patches
+        self.patchsize = kernel.patchsize
+        self.halosize = kernel.halosize
+        self.indexes = kernel.indexes
+        self.dim = kernel.dim
+
+        for l,r,direction in zip(kernel.LHS,kernel.RHS,kernel.directions):
+            self.loop([l,r],direction,kernel.dim)
+        self.code += '\n}\n'
+
+    def indent(self,val=0,force=False):
+        self.INDENT += val
+        if val == 0 or force:
+            self.code += (self.INDENT * "\t")
+
+    def loop(self,expr,direction,below):
+        level = self.dim - below
+        idx = self.indexes[level]
+        self.indent()
+
+        if level == 0:
+            r = [0,self.n_patches]
+        elif direction < 0:
+            r = [0, self.patchsize + 2*self.halosize+1]
+        elif direction == level:
+            r = [0, self.patchsize + 2*self.halosize+1]
+        else:
+            r = [self.halosize, self.patchsize + self.halosize+1]
+
+        self.code += f"for (int {idx} = {r[0]}; {idx} < {r[1]}; {idx}++)" + " {\n"
+        if below > 0:
+            self.indent(1)
+            self.loop(expr,direction,below-1)
+            self.indent(-1)
+        else:
+            self.indent(1,True)
+            self.code += f'{expr[0]} = {expr[1]};'
+            self.indent(-1)
+        self.code += "\n"
+        self.indent()
+        self.code += "}\n"
         
-        # print(default_shape)
+    def file(self,name='test.cpp',header=None):
+        if header != None:
+            self.code = f"#include '{header}'\n\n" + self.code
+        F = open(name,'w')
+        F.write(self.code)
 
-        for item in kernel.items:
-            all_items[item] = IndexedBase(item,shape=default_shape)
-        for item in kernel.directional_items:
-            tmp = ''
-            for direction in ['_patch','_x','_y','_z']:
-                tmp = item + direction
-                all_items[tmp] = IndexedBase(tmp,shape=halo_shape)
-        for item in kernel.functions:
-            all_items[item] = Function(item)
+    def here(self):
+        print(self.code)
 
-        for i,j in zip(kernel.LHS,kernel.RHS):          
-            l = sympify(i,locals=all_items)
-            r = sympify(j,locals=all_items)
-            self.lines.append([l,r])
-        
-        # self.assigned = []  #tracks what variables have already been assigned to in order to use += rather than =
-
-        for line in self.lines:
-            # print(line[0],line[1])
-        
-            
-            l1 = cxxcode(Assignment(line[0],line[1]),contract=True)
-            print(l1)
-
-            # [(cf, cs), (hf, hs)] = codegen((line[0],line[1]),language='c')
-            # print(cs)
-
-        # CythonCodeWrapper(self.lines[0])
 
 
 
