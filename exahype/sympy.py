@@ -27,6 +27,10 @@ Indexed(IndexedBase(Symbol('tmp_flux_x'), Tuple(Integer(2), Integer(5), Integer(
 )
 '''
 
+
+'''
+  Base class for SymPy Token wrapper classes, containing structural code
+'''
 class SymPyNode:
   
   _parent = None
@@ -34,11 +38,12 @@ class SymPyNode:
   _sympyNode: Token = None
   _mlirNode: Operation = None
   _type = None
+  _terminate = False
   
-  def __init__(self):
-    self._parent = None
+  def __init__(self, sympyNode, parent = None):
+    self._parent = parent
     self._children = []
-    self._sympyNode = None
+    self._sympyNode = sympyNode
     self._mlirNode = None
     
   def setType(self, type):
@@ -73,87 +78,23 @@ class SymPyNode:
     if delete_source_tree:
       self._sympyNode._args = tuple()
   
-
   '''
     Descend the SymPy AST from the passed node, creating MLIR nodes
     NOTE: We pass the current node to the child node processing to
     allow the code to determine the context.
   '''
   def process(self, force = False):
-    '''
-      If we already have a MLIR node we don't process *unless* forced.
-      This prevents double processing of children.
-    '''
-    if self._mlirNode is None or force:
-      match self._sympyNode:
-        case Integer():
-            '''
-              TODO: we will need to understand the context to generate
-              the correct MLIR code i.e. is it an attribute or literal?
-            '''
-            # NOTE: We need to set the node type before the 'makeNumeric()' call (naughty!)
-            if self._sympyNode.__sizeof__() >= 56:
-              self.setType(i64)            
-            else:
-              self.setType(i32)
-            self.makeNumeric()
-            return self._mlirNode
-        case Float():
-            if self._sympyNode.__sizeof__() >= 56:
-              self.setType(f64)            
-            else:
-              self.setType(f32)       
-            self.makeNumeric()
-            return self._mlirNode
-        case Tuple():
-            print("Tuple")
-        case Add():
-          # We process the children and type the node
-          childTypes = self.typeOperation()
+    if self._mlirNode is None or force: 
+      self._process(force)
+      if not self._terminate:
+        for child in self._children:
+          child.process(force) 
 
-          if (self.getType() is i64) or (self.getType() is i32):
-            # TODO: Consider promoting i32 to i64
-            self._mlirNode = Addi(self._children[0].process(force), self._children[1].process(force)) 
-            # We've processed the children, so are finished here
-            return self._mlirNode
-          elif (self.getType() is f64) or (self.getType() is f32):
-            # Promote any the types
-            if len(childTypes) == 2:
-              # Promote to f32 (float) or f64 (double), as appropriate
-              if (childTypes[0] is f32) or (childTypes[0] is f64):
-                self._mlirNode = Addf(self._children[0].process(force), SIToFPOp(self._children[1].process(force), target_type=self.getType()))
-              else:
-                self._mlirNode = Addf(SIToFPOp(self._children[0].process(force),target_type=self.getType()), self._children[1].process(force))
-            else:
-              self._mlirNode = Addf(self._children[0].process(force), self._children[1].process(force))
-              
-            # We've processed the children, so are finished here
-            return self._mlirNode
-          else:
-              raise Exception(f"Unable to create an MLIR 'Add' operation of type '{self.getType()}'")
-
-        case Mul():
-            print("Mul")
-        case IndexedBase():
-            print("IndexedBase")
-        case Indexed():
-            print("Indexed")
-        case Idx():
-            print("Idx")
-        case Symbol():
-            print("Symbol")
-        case Function():
-            # For ExaHype, this is a Function call
-            print(f"Function: parent {self._parent}")
-        case _:
-            raise Exception(f"SymPy class '{self._sympyNode.__class__}' ('{self._sympyNode}') not supported")
-
-    for child in self._children:
-      child.process(force) 
-
+      # Reset terminate flag
+      self._terminate = False
     return self._mlirNode
 
-
+  # TODO: This creates constants at present, we need to consider non-literals
   def makeNumeric(self, size = 64):
     if self.getType() is i64:
       self._mlirNode = Constant.create(properties={"value": IntegerAttr.from_int_and_width(int(self._sympyNode.as_expr()), size)}, result_types=[i64])
@@ -203,17 +144,114 @@ class SymPyNode:
         # We return the types of the children / args so that we can insert the type cast
         return [ type1, type2 ]
 
+  
+'''
+  For each SymPy Token class, we create a subclass of SymPyNode 
+  and implement a '_process' method to create the MLIR code in _mlirNode
+'''
+class SymPyInteger(SymPyNode):
 
+  def _process(self, force = False):
+    '''
+      TODO: we will need to understand the context to generate
+      the correct MLIR code i.e. is it an attribute or literal?
+    '''
+    # NOTE: We need to set the node type before the 'makeNumeric()' call (naughty!)
+    if self._sympyNode.__sizeof__() >= 56:
+      self.setType(i64)            
+    else:
+      self.setType(i32)
+    self.makeNumeric()
+    
+    return self._mlirNode   
+
+
+class SymPyFloat(SymPyNode):
+
+  def _process(self, force = False):  
+    if self._sympyNode.__sizeof__() >= 56:
+      self.setType(f64)            
+    else:
+      self.setType(f32)       
+    self.makeNumeric()
+
+    return self._mlirNode
+
+
+class SymPyAdd(SymPyNode):
+
+  def _process(self, force = False): 
+    # We process the children and type the node
+    childTypes = self.typeOperation()
+
+    # NOTE: As we have processed the child nodes set the TERMINATE flag
+    self._terminate = True
+
+    if (self.getType() is i64) or (self.getType() is i32):
+      # TODO: Consider promoting i32 to i64
+      self._mlirNode = Addi(self._children[0].process(force), self._children[1].process(force)) 
+    elif (self.getType() is f64) or (self.getType() is f32):
+      # Promote any the types
+      if len(childTypes) == 2:
+        # Promote to f32 (float) or f64 (double), as appropriate
+        if (childTypes[0] is f32) or (childTypes[0] is f64):
+          self._mlirNode = Addf(self._children[0].process(force), SIToFPOp(self._children[1].process(force), target_type=self.getType()))
+        else:
+          self._mlirNode = Addf(SIToFPOp(self._children[0].process(force),target_type=self.getType()), self._children[1].process(force))
+      else:
+        self._mlirNode = Addf(self._children[0].process(force), self._children[1].process(force))
+    else:
+        raise Exception(f"Unable to create an MLIR 'Add' operation of type '{self.getType()}'")
+
+    return self._mlirNode
+
+
+'''
+  Top-level SymPy to MLIR builder / translator class
+'''
 class SymPyToMLIR:
   
   name = 'sympy-to-mlir'
-  _root: SymPyNode
-
-  def __init__(self):
-    self._root = SymPyNode()
+  _root: SymPyNode = None
 
   def print(self):
-    self._root.print()
+    if self._root is not None:
+      self._root.print()
+
+   # We build a new 'wrapper' tree to support MLIR generation.
+  def build(sympyNode: Token, parent: SymPyNode = None, delete_source_tree = False):
+    node = None
+
+    match sympyNode:
+      case Integer():
+        node = SymPyInteger(sympyNode, parent)
+      case Float():
+        node = SymPyFloat(sympyNode, parent)
+      case Tuple():
+        print("Tuple")
+      case Add():
+        node = SymPyAdd(sympyNode, parent)
+      case Mul():
+          print("Mul")
+      case IndexedBase():
+          print("IndexedBase")
+      case Indexed():
+          print("Indexed")
+      case Idx():
+          print("Idx")
+      case Symbol():
+          print("Symbol")
+      case Function():
+          # For ExaHype, this is a Function call
+          print(f"Function: parent {self._parent}")
+      case _:
+          raise Exception(f"SymPy class '{self._sympyNode.__class__}' ('{self._sympyNode}') not supported")
+
+    # Build tree, setting parent node as we go
+    for child in node._sympyNode.args:
+      node._children.append(SymPyToMLIR.build(child, node))
+
+    return node
 
   '''
     From a SymPy AST, build tree of 'wrapper' objects, then
@@ -221,7 +259,7 @@ class SymPyToMLIR:
   '''
   def apply(self, root, delete_source_tree = False):
     # Build tree of 'wrapper' objects
-    self._root.build(root, delete_source_tree=delete_source_tree)
+    self._root = SymPyToMLIR.build(root, delete_source_tree=delete_source_tree)
     
     index = IndexType()
 
@@ -231,4 +269,4 @@ class SymPyToMLIR:
       self._root.process()
     
     return mlir_module
-      
+
