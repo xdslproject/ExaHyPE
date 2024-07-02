@@ -3,8 +3,8 @@ from sympy.codegen.ast import Token
 from xdsl.builder import Builder, ImplicitBuilder
 from xdsl.ir import Operation
 from xdsl.dialects import func
-from xdsl.dialects.builtin import  ModuleOp, Region, Block, IndexType, IntegerAttr, FloatAttr, i64, f64
-from xdsl.dialects.arith import Constant, Addi, Addf, Muli
+from xdsl.dialects.builtin import  ModuleOp, Region, Block, IndexType, IntegerAttr, FloatAttr, i32, i64, f32, f64
+from xdsl.dialects.arith import Constant, Addi, Addf, Muli, SIToFPOp, FPToSIOp
 
 '''
  Classes to support the transformation of a SymPy AST to MLIR standard dialects.
@@ -92,28 +92,43 @@ class SymPyNode:
               the correct MLIR code i.e. is it an attribute or literal?
             '''
             # NOTE: We need to set the node type before the 'makeNumeric()' call (naughty!)
-            self.setType(i64)            
+            if self._sympyNode.__sizeof__() >= 56:
+              self.setType(i64)            
+            else:
+              self.setType(i32)
             self.makeNumeric()
             return self._mlirNode
         case Float():
-            self.setType(f64)          
+            if self._sympyNode.__sizeof__() >= 56:
+              self.setType(f64)            
+            else:
+              self.setType(f32)       
             self.makeNumeric()
             return self._mlirNode
         case Tuple():
             print("Tuple")
         case Add():
           # We process the children and type the node
-          self.typeOperation()
+          childTypes = self.typeOperation()
 
-          # The types are objects, not classes
-          if self.getType() == i64:
-              self._mlirNode = Addi(self._children[0].process(force), self._children[1].process(force)) 
-              # We've processed the children, so are finished here
-              return self._mlirNode
-          elif self.getType() == f64:
+          if (self.getType() is i64) or (self.getType() is i32):
+            # TODO: Consider promoting i32 to i64
+            self._mlirNode = Addi(self._children[0].process(force), self._children[1].process(force)) 
+            # We've processed the children, so are finished here
+            return self._mlirNode
+          elif (self.getType() is f64) or (self.getType() is f32):
+            # Promote any the types
+            if len(childTypes) == 2:
+              # Promote to f32 (float) or f64 (double), as appropriate
+              if (childTypes[0] is f32) or (childTypes[0] is f64):
+                self._mlirNode = Addf(self._children[0].process(force), SIToFPOp(self._children[1].process(force), target_type=self.getType()))
+              else:
+                self._mlirNode = Addf(SIToFPOp(self._children[0].process(force),target_type=self.getType()), self._children[1].process(force))
+            else:
               self._mlirNode = Addf(self._children[0].process(force), self._children[1].process(force))
-              # We've processed the children, so are finished here
-              return self._mlirNode
+              
+            # We've processed the children, so are finished here
+            return self._mlirNode
           else:
               raise Exception(f"Unable to create an MLIR 'Add' operation of type '{self.getType()}'")
 
@@ -140,9 +155,9 @@ class SymPyNode:
 
 
   def makeNumeric(self, size = 64):
-    if self.getType() == i64:
+    if self.getType() is i64:
       self._mlirNode = Constant.create(properties={"value": IntegerAttr.from_int_and_width(int(self._sympyNode.as_expr()), size)}, result_types=[i64])
-    elif self.getType() == f64:
+    elif self.getType() is f64:
       self._mlirNode = Constant.create(properties={"value": FloatAttr(float(self._sympyNode.as_expr()), size)}, result_types=[f64])
     else:
       raise Exception(f"Unable to create an MLIR attribute type '{self.getType()}'")   
@@ -151,6 +166,7 @@ class SymPyNode:
   def typeOperation(self):
     # We need to process the children first, then the type
     # percolate up and we can use it here.
+    # We use a set to see how many different types we have
     types = set()
     for child in self._children:
       child.process()
@@ -159,20 +175,33 @@ class SymPyNode:
     if len(types) == 1:
       theType = types.pop()
       self.setType(theType)
-      return theType
+      return [ theType ]
     elif len(types) == 2:
-      type1 = types.pop()
-      type2 = types.pop()
-      # NOTE: We shouldn't get 'None' as a type here.
+      # We need to preserve the order of the types, so get them again
+      type1 = self._children[0].getType()
+      type2 = self._children[1].getType()
+      # NOTE: We shouldn't get 'None' as a type here - throw exception?
       if (type1 is None) and (type2 is not None):
         self.setType(type2)
-        return type2
+        return [ type2 ]
       elif (type1 is not None) and (type2 is None):
         self.setType(type1)
-        return type1
+        return [ type1 ]
       else:
-        # TODO: We need to coerce the types
-        raise Exception(f"TODO: Coerce operands for operation '{self._sympyNode}'")
+        # We need to coerce numeric types
+        if (type1 is f64) or (type2 is f64):
+          self.setType(f64)
+        elif (type1 is f32) or (type2 is f32):
+          self.setType(f32)
+        elif (type1 is i64) or (type2 is i64):
+          self.setType(i64)
+        elif (type1 is i32) and (type2 is i32):
+          self.setType(i32)
+          return [ i32 ]
+        else:
+          raise Exception(f"TODO: Coerce operands for operation '{self._sympyNode}'")
+        # We return the types of the children / args so that we can insert the type cast
+        return [ type1, type2 ]
 
 
 class SymPyToMLIR:
