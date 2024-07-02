@@ -1,10 +1,12 @@
-from sympy import Symbol, Tuple, Function, Indexed, IndexedBase, Idx, Integer, Float, Add, Mul
+from sympy import Symbol, Tuple, Function, Indexed, IndexedBase, Idx, Integer, Float, Add, Mul, Pow
+from sympy.core.numbers import NegativeOne
 from sympy.codegen.ast import Token
 from xdsl.builder import Builder, ImplicitBuilder
 from xdsl.ir import Operation
 from xdsl.dialects import func
 from xdsl.dialects.builtin import  ModuleOp, Region, Block, IndexType, IntegerAttr, FloatAttr, i32, i64, f32, f64
-from xdsl.dialects.arith import Constant, Addi, Addf, Muli, SIToFPOp, FPToSIOp
+from xdsl.dialects.arith import Constant, Addi, Addf, Muli, Mulf, DivSI, Divf, SIToFPOp, FPToSIOp
+from xdsl.dialects.experimental.math import IPowIOp, FPowIOp
 
 '''
  Classes to support the transformation of a SymPy AST to MLIR standard dialects.
@@ -17,14 +19,13 @@ from xdsl.dialects.arith import Constant, Addi, Addf, Muli, SIToFPOp, FPToSIOp
 
 '''
 Indexed(IndexedBase(Symbol('tmp_flux_x'), Tuple(Integer(2), Integer(5), Integer(5))), 
-    Idx(Symbol('patch', integer=True), Tuple(Integer(0), Integer(1))), 
-    Idx(Symbol('i', integer=True), Tuple(Integer(0), Integer(3))), 
-    Idx(Symbol('j', integer=True), Tuple(Integer(0), Integer(3)))) 
-    Function('Flux')(Indexed(IndexedBase(Symbol('Q_copy'), Tuple(Integer(2), Integer(4), Integer(4))), 
-    Idx(Symbol('patch', integer=True), Tuple(Integer(0), Integer(1))), 
-    Idx(Symbol('i', integer=True), Tuple(Integer(0), Integer(3))), 
-    Idx(Symbol('j', integer=True), Tuple(Integer(0), Integer(3))))
-)
+  Idx(Symbol('patch', integer=True), Tuple(Integer(0), Integer(1))), 
+  Idx(Symbol('i', integer=True), Tuple(Integer(0), Integer(3))), 
+  Idx(Symbol('j', integer=True), Tuple(Integer(0), Integer(3)))) 
+Function('Flux')(Indexed(IndexedBase(Symbol('Q_copy'), Tuple(Integer(2), Integer(4), Integer(4))), 
+  Idx(Symbol('patch', integer=True), Tuple(Integer(0), Integer(1))), 
+  Idx(Symbol('i', integer=True), Tuple(Integer(0), Integer(3))), 
+  Idx(Symbol('j', integer=True), Tuple(Integer(0), Integer(3)))))
 '''
 
 
@@ -206,6 +207,90 @@ class SymPyAdd(SymPyNode):
     return self._mlirNode
 
 
+class SymPyMul(SymPyNode):
+
+  def _process(self, force = False): 
+    # We process the children and type the node
+    childTypes = self.typeOperation()
+
+    # NOTE: As we have processed the child nodes set the TERMINATE flag
+    self._terminate = True
+
+    if (self.getType() is i64) or (self.getType() is i32):
+      # TODO: Consider promoting i32 to i64
+      self._mlirNode = Muli(self._children[0].process(force), self._children[1].process(force)) 
+    elif (self.getType() is f64) or (self.getType() is f32):
+      # Promote any the types
+      if len(childTypes) == 2:
+        # Promote to f32 (float) or f64 (double), as appropriate
+        if (childTypes[0] is f32) or (childTypes[0] is f64):
+          self._mlirNode = Mulf(self._children[0].process(force), SIToFPOp(self._children[1].process(force), target_type=self.getType()))
+        else:
+          self._mlirNode = Mulf(SIToFPOp(self._children[0].process(force),target_type=self.getType()), self._children[1].process(force))
+      else:
+        self._mlirNode = Mulf(self._children[0].process(force), self._children[1].process(force))
+    else:
+        raise Exception(f"Unable to create an MLIR 'Mul' operation of type '{self.getType()}'")
+
+    return self._mlirNode
+
+
+class SymPyDiv(SymPyNode):
+
+  def _process(self, force = False): 
+    # We process the children and type the node
+    childTypes = self.typeOperation()
+
+    # NOTE: As we have processed the child nodes set the TERMINATE flag
+    self._terminate = True
+
+    if (self.getType() is i64) or (self.getType() is i32):
+      # TODO: Consider promoting i32 to i64
+      self._mlirNode = DivSI(self._children[0].process(force), self._children[1].process(force)) 
+    elif (self.getType() is f64) or (self.getType() is f32):
+      # Promote any the types
+      if len(childTypes) == 2:
+        # Promote to f32 (float) or f64 (double), as appropriate
+        if (childTypes[0] is f32) or (childTypes[0] is f64):
+          self._mlirNode = Divf(self._children[0].process(force), SIToFPOp(self._children[1].process(force), target_type=self.getType()))
+        else:
+          self._mlirNode = Divf(SIToFPOp(self._children[0].process(force),target_type=self.getType()), self._children[1].process(force))
+      else:
+        self._mlirNode = Divf(self._children[0].process(force), self._children[1].process(force))
+    else:
+        raise Exception(f"Unable to create an MLIR 'Div' operation of type '{self.getType()}'")
+
+    return self._mlirNode
+
+
+class SymPyPow(SymPyNode):
+
+  def _process(self, force = False): 
+    # We process the children and type the node
+    childTypes = self.typeOperation()
+
+    # NOTE: As we have processed the child nodes set the TERMINATE flag
+    self._terminate = True
+
+    if (self.getType() is i64) or (self.getType() is i32):
+      # TODO: Consider promoting i32 to i64
+      self._mlirNode = IPowIOp(self._children[0].process(force), self._children[1].process(force)) 
+    elif (self.getType() is f64) or (self.getType() is f32):
+      # Promote any the types
+      if len(childTypes) == 2:
+        # Promote to f32 (float) or f64 (double), as appropriate
+        if (childTypes[0] is f32) or (childTypes[0] is f64):
+          self._mlirNode = Divf(self._children[0].process(force), SIToFPOp(self._children[1].process(force), target_type=self.getType()))
+        else:
+          self._mlirNode = Divf(SIToFPOp(self._children[0].process(force),target_type=self.getType()), self._children[1].process(force))
+      else:
+        self._mlirNode = Divf(self._children[0].process(force), self._children[1].process(force))
+    else:
+        raise Exception(f"Unable to create an MLIR 'Div' operation of type '{self.getType()}'")
+
+    return self._mlirNode
+
+
 '''
   Top-level SymPy to MLIR builder / translator class
 '''
@@ -232,7 +317,16 @@ class SymPyToMLIR:
       case Add():
         node = SymPyAdd(sympyNode, parent)
       case Mul():
-          print("Mul")
+        # NOTE: If we have an integer multiplied by another integer 
+        # to the power of -1, create a SymPyDiv node <sigh!>
+        if (type(sympyNode.args[1]) is Pow) and (type(sympyNode.args[1].args[1]) is NegativeOne):
+          newNode = Token()
+          newNode._args = ( sympyNode.args[0], sympyNode.args[1].args[0] )
+          node = SymPyDiv(newNode, parent)
+        else:
+          node = SymPyMul(sympyNode, parent)
+      case Pow():
+        node = SymPyPow(sympyNode, parent)
       case IndexedBase():
           print("IndexedBase")
       case Indexed():
@@ -245,13 +339,14 @@ class SymPyToMLIR:
           # For ExaHype, this is a Function call
           print(f"Function: parent {self._parent}")
       case _:
-          raise Exception(f"SymPy class '{self._sympyNode.__class__}' ('{self._sympyNode}') not supported")
+          raise Exception(f"SymPy class '{type(sympyNode)}' ('{sympyNode}') not supported")
 
     # Build tree, setting parent node as we go
     for child in node._sympyNode.args:
       node._children.append(SymPyToMLIR.build(child, node))
 
     return node
+
 
   '''
     From a SymPy AST, build tree of 'wrapper' objects, then
