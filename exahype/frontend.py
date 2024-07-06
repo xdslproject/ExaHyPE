@@ -21,14 +21,15 @@ class general_builder:
         self.n_real = n_real
         self.n_aux = n_aux
 
-        self.indexes = [index for index in symbols('patch i j var', cls=Idx)]
+        self.indexes = [index for index in symbols('patch i j', cls=Idx)]
         if dim == 3:
             self.indexes.append(symbols('k', cls=Idx))
+        self.indexes.append(symbols('var', cls=Idx))
 
         self.inputs = []
         self.items = []                 #stored as strings
         self.directional_items = []     #stored as strings
-        self.functions = []             #stored as strings
+        self.functions = {}             #stored as sympy functions
         
         halo_range = (0,self.patch_size+2*self.halo_size)
         default_range = halo_range
@@ -37,7 +38,7 @@ class general_builder:
 
         self.LHS = []
         self.RHS = []
-        self.directions = []   
+        self.directions = []            #used for cutting the halo in particular directions
         self.struct_inclusion = []      #how much of the struct to loop over, 0 for none, 1 for n_real, 2 for n_real + n_aux   
 
     def const(self,expr):
@@ -63,7 +64,7 @@ class general_builder:
         return IndexedBase(expr)
 
     def function(self,expr):
-        self.functions.append(expr)
+        self.functions[expr] = expr
         self.all_items[expr] = Function(expr)
         return Function(expr)
     

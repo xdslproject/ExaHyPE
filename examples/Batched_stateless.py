@@ -4,7 +4,7 @@ sys.path.insert(1,"/home/tvwh77/exahype/DSL/ExaHyPE") #this is for me to use the
 from exahype.frontend import general_builder
 from exahype.printers import cpp_printer
 
-kernel = general_builder(dim=2,patch_size=10,halo_size=1,n_real=5,n_aux=13)
+kernel = general_builder(dim=3,patch_size=4,halo_size=1,n_real=5,n_aux=5)
 
 Q           = kernel.item('Q')
 Q_copy      = kernel.item('Q_copy')
@@ -28,5 +28,5 @@ kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right))
 
 kernel.single(Q[0],Q_copy[0])
 
-cpp_printer(kernel).file('test.cpp',header='test.h')
+cpp_printer(kernel).file('test.cpp',header='Functions.h')
 # cpp_printer(kernel).here()
