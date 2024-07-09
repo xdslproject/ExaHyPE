@@ -87,20 +87,24 @@ class cpp_printer:
         self.code += ';\n'
 
     def Cppify(self,item):
-        expr = [_ for _ in str(item).partition('[')]
+        expr = [str(item)]#_ for _ in str(item).partition('[')]
         active = True
         while active:
             active = False
             n = []
             for a in expr:
-                if ']' in a and len(a) > 1:
+                if '[' in a and len(a) > 1:
+                    active = True
+                    for b in a.partition('['):
+                        n.append(b)
+                elif ']' in a and len(a) > 1:
                     active = True
                     for b in a.partition(']'):
                         n.append(b)
                 else:
                     n.append(a)
             expr = n
-
+        print(expr)
         out = ''
         unpack = False
 
@@ -118,10 +122,26 @@ class cpp_printer:
                 else:
                     leap = self.kernel.n_real
                 size = self.kernel.patch_size + 2*self.kernel.halo_size
+                strides = [leap*size**2,leap*size,leap]
                 if self.kernel.dim == 3:
-                    out += f'{leap*size**3}*patch + {leap*size**2}*i + {leap*size}*j + {leap}*k + var'
-                elif self.kernel.dim == 2:
-                    out += f'{leap*size**2}*patch + {leap*size}*i + {leap}*j + var'
+                    strides = [leap*size**3] + strides
+                i = 0
+                for char in a.split(','):
+                    char = char.strip()
+                    if i != 0:
+                        out += ' + '
+                    if i < len(strides):
+                        out += f'{strides[i]}*'
+                    if char in self.kernel.all_items:
+                        out += f'{char}'
+                    else:
+                        out += f'({char})'
+                    
+                    i += 1
+                    # if self.kernel.dim == 3:
+                    #     out += f'{leap*size**3}*patch + {leap*size**2}*i + {leap*size}*j + {leap}*k + var'
+                    # elif self.kernel.dim == 2:
+                    #     out += f'{leap*size**2}*patch + {leap*size}*i + {leap}*j + var'
                 
         return out
 
