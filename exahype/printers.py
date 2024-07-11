@@ -1,8 +1,7 @@
 import numpy as np
 from sympy import *
-from sympy.utilities.codegen import codegen
-from sympy.printing import cxxcode, ccode
-# from sympy.codegen.ast import Assignment
+# from sympy.utilities.codegen import codegen
+# from sympy.printing import cxxcode, ccode
 
 class cpp_printer:
     def __init__(self,kernel):
@@ -70,7 +69,10 @@ class cpp_printer:
             self.indent(-1)
         else: #print loop interior
             self.indent(1,True)
-            self.code += f'{self.Cppify(expr[0])} = {self.Cppify(expr[1])};\n'
+            if expr[1] == '':
+                self.code += f'{self.Cppify(expr[0])};\n'
+            else:
+                self.code += f'{self.Cppify(expr[0])} = {self.Cppify(expr[1])};\n'
             self.indent(-1)
         self.indent()
         self.code += "}\n"
@@ -80,7 +82,9 @@ class cpp_printer:
         self.code += f'double *{item} = new double[{self.kernel.n_patches}'
         for d in range(self.kernel.dim):
             self.code += f'*{self.kernel.patch_size+2*self.kernel.halo_size}'
-        if str(item) not in self.kernel.items:
+        if self.kernel.item_struct[str(item)] == 0:
+            self.code += ']'
+        elif str(item) not in self.kernel.items:
             self.code += f'*{self.kernel.n_real}]'
         else:
             self.code += f'*{self.kernel.n_real + self.kernel.n_aux}]'
@@ -104,7 +108,7 @@ class cpp_printer:
                 else:
                     n.append(a)
             expr = n
-        print(expr)
+        # print(expr)
         out = ''
         unpack = False
 
@@ -128,6 +132,9 @@ class cpp_printer:
                 i = 0
                 for char in a.split(','):
                     char = char.strip()
+                    # if char == 'var' and self.kernels.item_struct[item] == 0:
+                    #     out = out[0:len(out)-1]
+                    #     continue
                     if i != 0:
                         out += ' + '
                     if i < len(strides):

@@ -29,7 +29,8 @@ class general_builder:
         self.inputs = []
         self.items = []                 #stored as strings
         self.directional_items = []     #stored as strings
-        self.functions = {}             #stored as sympy functions
+        self.functions = []             #stored as sympy functions
+        self.item_struct = {}           #0 for none, 1 for n_real, 2 for n_real + n_aux
         
         halo_range = (0,self.patch_size+2*self.halo_size)
         default_range = halo_range
@@ -46,38 +47,36 @@ class general_builder:
         self.all_items[expr] = symbols(expr)
         return symbols(expr)
 
-    def item(self,expr):
+    def item(self,expr,struct=True):
         self.items.append(expr)
         self.all_items[expr] = IndexedBase(expr)
         if len(self.items) == 1:
             self.inputs.append(expr)# = expr
-        return IndexedBase(expr)#,shape=self.default_shape)#, shape=self.dim*[self.patch_size+self.halo_size])
+        self.item_struct[expr] = 0 + struct*2
+        return IndexedBase(expr)
 
-    def directional_item(self,expr):
+    def directional_item(self,expr,struct=True):
         self.directional_items.append(expr)
         tmp = ''
         extra = ['_x','_y','_z']
         for i in range(self.dim):
             direction = extra[i]
             tmp = expr + direction
-            self.all_items[tmp] = IndexedBase(tmp)#,shape=self.default_shape)
+            self.all_items[tmp] = IndexedBase(tmp)
+            self.item_struct[tmp] = 0 + struct*1
         return IndexedBase(expr)
 
     def function(self,expr):
-        self.functions[expr] = expr
+        self.functions.append(expr)
         self.all_items[expr] = Function(expr)
         return Function(expr)
-    
-    def loop(self,LHR,RHS):
-        None
 
-    def single(self,LHS,RHS,direction=-1):
-        self.LHS.append(self.index(LHS,direction))
-        self.RHS.append(self.index(RHS,direction))
-        
-        if str(LHS).partition('[')[0] in self.inputs or str(RHS).partition('[')[0] in self.inputs:
+    def single(self,LHS,RHS='',direction=-1):
+        if str(type(LHS)) in self.functions or str(type(RHS)) in self.functions:
+            self.struct_inclusion.append(0)
+        elif str(LHS).partition('[')[0] in self.inputs:# or str(RHS).partition('[')[0] in self.inputs:
             self.struct_inclusion.append(2)
-        elif any(type(_) == Function for _ in self.RHS):
+        elif self.RHS == '':
             self.struct_inclusion.append(0)
         else:
             self.struct_inclusion.append(1)
@@ -87,11 +86,17 @@ class general_builder:
         else:
             self.directions.append(direction)
 
-    def directional(self,LHS,RHS):
+        self.LHS.append(self.index(LHS,direction))
+        self.RHS.append(self.index(RHS,direction))
+
+    def directional(self,LHS,RHS=''):
         for i in range(self.dim):
             self.single(LHS,RHS,i+1)
 
     def index(self,expr_in,direction=-1):
+        if expr_in == '':
+            return ''
+        
         expr = ''
         word = ''
         wait = False
@@ -134,9 +139,6 @@ class general_builder:
         
         return sympify(expr,locals=self.all_items)
 
-    # def print(self):
-    #     for i in range(len(self.LHS)):
-    #         print(f"{self.LHS[i]} = {self.RHS[i]}")
 
 
 
