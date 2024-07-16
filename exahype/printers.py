@@ -18,11 +18,19 @@ class cpp_printer:
         for item in kernel.all_items.values():
             if str(item) not in kernel.inputs and type(item) == tensor.indexed.IndexedBase:
                 self.alloc(item)
+        #allocate directional consts
+        for item in kernel.directional_consts:
+            self.indent()
+            self.code += f'double {kernel.all_items[item]};\n'
         self.code += '\n'
 
         #loops
         for l,r,direction,struc in zip(kernel.LHS,kernel.RHS,kernel.directions,kernel.struct_inclusion):
-            self.loop([l,r],direction,kernel.dim+1,struc)
+            if str(l) in kernel.directional_consts:
+                self.indent()
+                self.code += f'{l} = {r};\n'
+            else:
+                self.loop([l,r],direction,kernel.dim+1,struc)
 
         #delete temp arrays
         self.code += '\n'
@@ -31,7 +39,6 @@ class cpp_printer:
                 self.indent()
                 self.code += f'delete[] {item};\n'
         self.code += '}\n'
-
 
     def indent(self,val=0,force=False):
         self.INDENT += val
@@ -47,7 +54,8 @@ class cpp_printer:
         if level == 0:
             r = [0,self.kernel.n_patches]
         elif below == 0:
-            match struct_inclusion:
+            k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)]
+            match min(k):
                 case 0:
                     r = [0,1]
                 case 1:
@@ -108,23 +116,43 @@ class cpp_printer:
                 else:
                     n.append(a)
             expr = n
-        # print(expr)
         out = ''
         unpack = False
+        in_func = False
 
         for a in expr:
             if a == '[':
                 out += a
                 unpack = True
             elif unpack == False:
+                if ')' in a:
+                    in_func = False
+                
                 item = a
+                k = [str(val) for val in self.kernel.functions if val in a]
+                if len(k) != 0:
+                    in_func = True
+                
+                if in_func:
+                    for b in self.kernel.items + self.kernel.directional_items:
+                        if b in a:
+                            a = a.replace(b,f'&{str(b)}')
+                            break
+                
                 out += a
+                    
+                        
+                        
             else:
                 unpack = False
-                if item in self.kernel.items:
-                    leap = self.kernel.n_real + self.kernel.n_aux
-                else:
-                    leap = self.kernel.n_real
+                k = [key for key,val in self.kernel.item_struct.items() if key in item]
+                match self.kernel.item_struct[k[0]]:
+                    case 0:
+                        leap = 1
+                    case 1:
+                        leap = self.kernel.n_real
+                    case 2:
+                        leap = self.kernel.n_real + self.kernel.n_aux
                 size = self.kernel.patch_size + 2*self.kernel.halo_size
                 strides = [leap*size**2,leap*size,leap]
                 if self.kernel.dim == 3:
@@ -145,10 +173,6 @@ class cpp_printer:
                         out += f'({char})'
                     
                     i += 1
-                    # if self.kernel.dim == 3:
-                    #     out += f'{leap*size**3}*patch + {leap*size**2}*i + {leap*size}*j + {leap}*k + var'
-                    # elif self.kernel.dim == 2:
-                    #     out += f'{leap*size**2}*patch + {leap*size}*i + {leap}*j + var'
                 
         return out
 

@@ -29,8 +29,9 @@ class general_builder:
         self.inputs = []
         self.items = []                 #stored as strings
         self.directional_items = []     #stored as strings
+        self.directional_consts = {}    #stores values of the const for each direction
         self.functions = []             #stored as sympy functions
-        self.item_struct = {}           #0 for none, 1 for n_real, 2 for n_real + n_aux
+        self.item_struct = {}           #0 for none, 1 for n_real, 2 for n_real + n_aux, -1 for not applicable (for example a constant)
         
         halo_range = (0,self.patch_size+2*self.halo_size)
         default_range = halo_range
@@ -47,6 +48,13 @@ class general_builder:
         self.all_items[expr] = symbols(expr)
         return symbols(expr)
 
+    def directional_const(self,expr,vals):
+        if len(vals) != self.dim:
+            raise Exception("directional constant must have values for each direction")
+        self.directional_consts[expr] = vals
+        self.all_items[expr] = symbols(expr)
+        return symbols(expr)
+        
     def item(self,expr,struct=True):
         self.items.append(expr)
         self.all_items[expr] = IndexedBase(expr)
@@ -57,6 +65,7 @@ class general_builder:
 
     def directional_item(self,expr,struct=True):
         self.directional_items.append(expr)
+        self.item_struct[expr] = 0 + struct*1
         tmp = ''
         extra = ['_x','_y','_z']
         for i in range(self.dim):
@@ -74,12 +83,13 @@ class general_builder:
     def single(self,LHS,RHS='',direction=-1):
         if str(type(LHS)) in self.functions or str(type(RHS)) in self.functions:
             self.struct_inclusion.append(0)
-        elif str(LHS).partition('[')[0] in self.inputs:# or str(RHS).partition('[')[0] in self.inputs:
+        elif str(LHS).partition('[')[0] in self.inputs:
             self.struct_inclusion.append(2)
         elif self.RHS == '':
             self.struct_inclusion.append(0)
         else:
-            self.struct_inclusion.append(1)
+            tmp = [val for key,val in self.item_struct.items() if key in (str(LHS)+str(RHS))]
+            self.struct_inclusion.append(min(tmp))
 
         if str(LHS).partition('[')[0] in self.inputs:
             self.directions.append(-2)
@@ -91,6 +101,12 @@ class general_builder:
 
     def directional(self,LHS,RHS=''):
         for i in range(self.dim):
+            for j, key in enumerate(self.directional_consts):
+                if key in str(LHS) or key in str(RHS):
+                    self.LHS.append(self.all_items[key])
+                    self.RHS.append(self.directional_consts[key][i])
+                    self.struct_inclusion.append(-1)
+                    self.directions.append(-1)
             self.single(LHS,RHS,i+1)
 
     def index(self,expr_in,direction=-1):
