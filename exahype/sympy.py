@@ -47,10 +47,17 @@ from sympy.codegen.ast import (
     Variable
 )
 from xdsl.builder import Builder, ImplicitBuilder
-from xdsl.ir import Operation, SSAValue
+from xdsl.ir import Operation, SSAValue, BlockArgument
 from xdsl.dialects import func
-from xdsl.dialects.builtin import UnrealizedConversionCastOp, ModuleOp, Region, Block, TypeAttribute, IndexType, IntegerAttr, FloatAttr, i32, i64, f32, f64, MemRefType, TensorType, DenseArrayBase
-from xdsl.dialects.llvm import GlobalOp
+from xdsl.dialects.builtin import (
+  UnrealizedConversionCastOp, ModuleOp,
+  Region, Block, DenseArrayBase,
+  TypeAttribute, IndexType, 
+  StringAttr, IntegerAttr, FloatAttr,
+  i32, i64, f32, f64, 
+  MemRefType, TensorType, IntegerType, Float64Type
+)
+from xdsl.dialects.llvm import GlobalOp, LLVMVoidType, LLVMPointerType
 from xdsl.dialects.memref import Load
 from xdsl.dialects.scf import For
 from xdsl.dialects.arith import Constant, Addi, Addf, Muli, Mulf, DivSI, Divf, SIToFPOp, FPToSIOp, IndexCastOp
@@ -245,6 +252,21 @@ class SymPyNode(ABC):
       self._terminate = terminate
     return self._terminate
 
+  # Map the SymPy AST type to the correct MLIR / LLVM type
+  def mapType(sympyType: Token) -> ParameterizedAttribute:
+    # Map function return types to MLIR / LLVM
+    if isinstance(sympyType, IndexedBase):
+      # TODO: check that opaque pointers are still correct
+      return LLVMPointerType.opaque()
+    match sympyType:
+      case IntBaseType():
+        return IntegerType(64)
+      case FloatBaseType():
+        return Float64Type()
+      case NoneToken():
+        return LLVMVoidType()
+      case _:
+        raise Exception(f"SymPyNode.mapType: return type '{sympyType}' not supported")
 
 '''
   For each SymPy Token class, we create a subclass of SymPyNode 
@@ -336,7 +358,7 @@ class SymPyMul(SymPyNode):
       else:
         return Mulf(self.child(0).process(ctx, force), self.child(1).process(ctx, force))
     else:
-        raise Exception(f"Unable to create an MLIR 'Mul' operation of type '{self.type()}'")
+        raise Exception(f"SymPyMul: unable to create an MLIR 'Mul' operation of type '{self.type()}'")
 
 
 class SymPyDiv(SymPyNode):
@@ -362,7 +384,7 @@ class SymPyDiv(SymPyNode):
       else:
         return Divf(self.child(0).process(ctx, force), self.child(1).process(ctx, force))
     else:
-        raise Exception(f"Unable to create an MLIR 'Div' operation of type '{self.type()}'")
+        raise Exception(f"SymPyDiv: unable to create an MLIR 'Div' operation of type '{self.type()}'")
 
 
 class SymPyPow(SymPyNode):
@@ -388,7 +410,7 @@ class SymPyPow(SymPyNode):
       else:
         return Divf(self.child(0).process(ctx, force), self.child(1).process(ctx, force))
     else:
-        raise Exception(f"Unable to create an MLIR 'Div' operation of type '{self.type()}'")
+        raise Exception(f"SymPyPow: unable to create an MLIR 'Div' operation of type '{self.type()}'")
 
 
 class SymPyIndexedBase(SymPyNode):
@@ -514,8 +536,43 @@ class SymPyFunctionDefinition(SymPyNode):
 
   def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
     self.terminate(True)
-    print(f"FunctionDefinition name {self.sympy().name}")
-    return self.mlir()
+    # Create a new context (scope) for the function definition
+    ctx = SSAValueCtx(dictionary=dict(), parent_scope=ctx)
+
+    return_type = SymPyNode.mapType(self.sympy().return_type)
+    # Now map the parameter types
+    arg_types = []
+    for i, arg in enumerate(self.sympy().parameters):
+      # Check to see if we're being passed an 'IndexedBase' as this
+      # represents an array / array reference (the latter for ExaHyPE)
+      if isinstance(arg.args[0], IndexedBase):
+        arg_type = SymPyNode.mapType(arg.args[0])
+        ctx[arg.args[0]] = (i, arg_type)
+        arg_types.append(arg_type)
+      else:
+        arg_type = SymPyNode.mapType(arg.type)
+        ctx[arg] = (i, arg_type)
+        arg_types.append(arg_type)
+
+    # TODO: now create the MLIR function definition and translate the body  
+    function_name = self.sympy().name
+
+    body = Region()
+    # NOTE: add the function argument types to the 'Block' or they will
+    # be 'lost'
+    block = Block(arg_types=arg_types) 
+
+    # NOTE: the 'ImplictBuilder' will add the 'Return' to the outer block
+    # and FuncOp() will complain it is already attached, so detach() it
+    ret = func.Return()
+    ret.detach()
+    block.add_op(ret)
+    body.add_block(block)
+
+    # NOTE: we currently set the visibility of the function to 'public'
+    # We may want to be able to change this in the future
+    function_visibility = StringAttr('public')
+    return self.mlir(func.FuncOp(name=self.sympy().name, function_type=(arg_types, [ return_type ]), region=body, visibility=function_visibility))
 
 
 class SymPyFunctionCall(SymPyNode):
@@ -624,7 +681,7 @@ class SymPyToMLIR:
       case NoneToken():
         return None
       case _:
-        raise Exception(f"SymPy class '{type(sympy_expr)}' ('{sympy_expr}') not supported")
+        raise Exception(f"SymPyToMLIR: class '{type(sympy_expr)}' ('{sympy_expr}') not supported")
 
     # Build tree, setting parent node as we go
     for child in node.sympy().args:
