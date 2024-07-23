@@ -74,17 +74,6 @@ from xdsl.utils.test_value import TestSSAValue
  NOTE: This *isn't* an xDSL dialect 
 '''
 
-'''
-Indexed(IndexedBase(Symbol('tmp_flux_x'), Tuple(Integer(2), Integer(5), Integer(5))), 
-  Idx(Symbol('patch', integer=True), Tuple(Integer(0), Integer(1))), 
-  Idx(Symbol('i', integer=True), Tuple(Integer(0), Integer(3))), 
-  Idx(Symbol('j', integer=True), Tuple(Integer(0), Integer(3)))) 
-Function('Flux')(Indexed(IndexedBase(Symbol('Q_copy'), Tuple(Integer(2), Integer(4), Integer(4))), 
-  Idx(Symbol('patch', integer=True), Tuple(Integer(0), Integer(1))), 
-  Idx(Symbol('i', integer=True), Tuple(Integer(0), Integer(3))), 
-  Idx(Symbol('j', integer=True), Tuple(Integer(0), Integer(3)))))
-'''
-
 @dataclass
 class SSAValueCtx:
     """
@@ -500,9 +489,9 @@ class SymPyIdx(SymPyNode):
 class SymPySymbol(SymPyNode):
 
   def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
-    self.terminate(False)
-    print(f"Symbol {self.sympy().name}")
-    return self.mlir()
+    self.terminate(True)
+    print(f"Symbol {ctx[self.sympy().name]}")
+    return self.mlir(ctx[self.sympy().name][2])
 
 
 class SymPyEquality(SymPyNode):
@@ -515,31 +504,75 @@ class SymPyEquality(SymPyNode):
     # we can create the wrapping function for now  
     print(f"Equality: {self.sympy().lhs} = {self.sympy().rhs}")
     print(f"Equality: {self.child(0)} = {self.child(1)}")
-    lhs = self.child(0).process(ctx, force)
+    # We dig out the loop bounds from the nested 'Tuple' within the 'Idx' node
+    # of the lhs node (self.child(0))
+    # TODO: update SymPyEquality constructor to build 'lhs' and 'rhs' nodes
+    bounds = self.child(0).child(1).child(1)
+    lwb = bounds.child(0).process(ctx, force)
+    upb = bounds.child(1).process(ctx, force)
+    print(f"Equality: lwb {lwb} upb {upb}")
+    #lhs = self.child(0).process(ctx, force)
     #rhs = self.child(1).process(ctx, force)
     # Process LH (child(0) and RHS (child(1))
     #childTypes = self.typeOperation(ctx)
     #print(f"Equality: childTypes {childTypes}")
-    print(lhs)
-    return lhs
+    #print(lhs)
+    lwb.detach()
+    upb.detach()
+    return self.mlir(upb)
 
 
 class SymPyCodeBlock(SymPyNode):
 
   def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
+    # NOTE: We will process all of the child nodes here
     self.terminate(True)
-    print(f"CodeBlock")
-    return self.mlir()
+    # If the parent is a FunctionDefinition, we use it's input arguments
+    # when we create the block
+    print(f"code block parent {self.parent()}")
+    if isinstance(self.parent(), SymPyFunctionDefinition):
+      #block = Block(arg_types=self.parent().argTypes()) 
+      block = self.parent().block()
+
+    print(f"CodeBlock: # kids {len(self.children())}")
+    for child in self.children():
+      block.add_op(child.process(ctx, force))
+
+    return self.mlir(block)
 
 
 class SymPyFunctionDefinition(SymPyNode):
 
+  def __init__(self: SymPyNode, sympy_expr: Token, parent = None):
+    super().__init__(sympy_expr, parent)
+    self._body = None
+    self._argTypes = None
+
+  def body(self: SymPyNode, body: SymPyNode = None) -> SymPyNode:
+    if body is not None:
+      self._body = body
+    return self._body
+
+  def block(self: SymPyNode, fnBlock: SymPyNode = None) -> Block:
+    if fnBlock is not None:
+      self._block = fnBlock
+    return self._block
+
+  def argTypes(self: SymPyNode, argTypes: List[ParameterizedAttribute] = None) -> List[ParameterizedAttribute]:
+    if argTypes is not None:
+      self._argTypes = argTypes
+    return self._argTypes
+
   def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
+    # NOTE: we process the relevant child nodes here i.e. return type, 
+    # parameters and body, so prevent automatic processing of the child
+    # nodes by 'SymPyNode.process()' above
     self.terminate(True)
     # Create a new context (scope) for the function definition
     ctx = SSAValueCtx(dictionary=dict(), parent_scope=ctx)
 
     return_type = SymPyNode.mapType(self.sympy().return_type)
+
     # Now map the parameter types
     arg_types = []
     for i, arg in enumerate(self.sympy().parameters):
@@ -547,12 +580,12 @@ class SymPyFunctionDefinition(SymPyNode):
       # represents an array / array reference (the latter for ExaHyPE)
       if isinstance(arg.args[0], IndexedBase):
         arg_type = SymPyNode.mapType(arg.args[0])
-        ctx[arg.args[0]] = (i, arg_type)
         arg_types.append(arg_type)
       else:
         arg_type = SymPyNode.mapType(arg.type)
-        ctx[arg] = (i, arg_type)
         arg_types.append(arg_type)
+
+    self.argTypes(arg_types)
 
     # TODO: now create the MLIR function definition and translate the body  
     function_name = self.sympy().name
@@ -560,19 +593,34 @@ class SymPyFunctionDefinition(SymPyNode):
     body = Region()
     # NOTE: add the function argument types to the 'Block' or they will
     # be 'lost'
-    block = Block(arg_types=arg_types) 
+    fn_block = Block(arg_types=arg_types) 
+    body.add_block(fn_block)
+
+    # NOTE: we currently set the visibility of the function to 'public'
+    # We may want to be able to change this in the future
+    function_visibility = StringAttr('public')
+    function = func.FuncOp(name=self.sympy().name, function_type=(arg_types, [ return_type ]), region=body, visibility=function_visibility)
+    # TODO: For now, we get back the function args for the SSA code but
+    # we should find a way to do this above
+    for i, arg in enumerate(function.body.block.args):
+      if isinstance(self.sympy().parameters[i].args[0], IndexedBase):
+        ctx[self.sympy().parameters[i].args[0].name] = (i, arg_types[i], arg)
+        arg_types.append(arg_type)
+      else:
+        ctx[self.sympy().parameters[i].symbol.name] = (i, arg_types[i], arg)
+        arg_types.append(arg_type)
+
+    # Add the block to the node so that we can access it in the body
+    self.block(fn_block)
+    self.body().process(ctx, force)
 
     # NOTE: the 'ImplictBuilder' will add the 'Return' to the outer block
     # and FuncOp() will complain it is already attached, so detach() it
     ret = func.Return()
     ret.detach()
-    block.add_op(ret)
-    body.add_block(block)
+    fn_block.add_op(ret)
 
-    # NOTE: we currently set the visibility of the function to 'public'
-    # We may want to be able to change this in the future
-    function_visibility = StringAttr('public')
-    return self.mlir(func.FuncOp(name=self.sympy().name, function_type=(arg_types, [ return_type ]), region=body, visibility=function_visibility))
+    return self.mlir(function)
 
 
 class SymPyFunctionCall(SymPyNode):
@@ -587,7 +635,7 @@ class SymPyVariable(SymPyNode):
 
   def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
     self.terminate(True)
-    print(f"Variable name {self.name}")
+    print(f"Variable name {self.sympy().symbol.name} SSA %{ctx[self.sympy().symbol.name][0]} type {ctx[self.sympy().symbol.name][1]}")
     return self.mlir()
 
 
@@ -668,6 +716,18 @@ class SymPyToMLIR:
         node = SymPyCodeBlock(sympy_expr, parent)  
       case FunctionDefinition():
         node = SymPyFunctionDefinition(sympy_expr, parent)
+        # Attach the 'body' node directly
+        node.body(self.build(node.sympy().body, node))
+        for child in node.sympy().args:
+          if child == node.sympy().body:
+            pass
+          else:    
+            if type(child) is String:
+              pass
+            else: 
+              node.addChild(self.build(child, node)) 
+        # NOTE: we've processed the children, so return here
+        return node
       case FunctionCall():
         node = SymPyFunctionCall(sympy_expr, parent)
       case Equality():
