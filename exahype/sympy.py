@@ -232,8 +232,11 @@ class SymPyNode(ABC):
     # We use a set to see how many different types we have
     types = set()
     for child in self.children():
-      child.process(ctx)
-      types.add(child.type())
+      if isinstance(child, SymPyNumeric):
+        child.process(ctx)
+        types.add(child.type())
+      else:
+        child.typeOperation(ctx)
 
     if len(types) == 1:
       theType = types.pop()
@@ -323,12 +326,16 @@ class SymPyNode(ABC):
       case _:
         raise Exception(f"SymPyNode.mapType: return type '{sympyType}' not supported")
 
-  def buildFor(block: Block, ctx: SSAValueCtx, lwbSSA: Operation, upbSSA: Operation, bodySSA: List[ Operation ], force = False) -> For:
+  def buildFor(block: Block, ctx: SSAValueCtx, lwbSSA: Operation, upbSSA: Operation, body: SymPyNode, force = False) -> For:
     # Create the block with our arguments, we will be putting into here the
     # operations that are part of the loop body
     block_arg_types=[IndexType()]
     block_args=[]
     bodyBlock = Block(arg_types=block_arg_types)
+
+    #with ImplicitBuilder(bodyBlock):
+      # Constant.create(properties={"value": IntegerAttr.from_index_int_value(1)}, result_types=[IndexType()])
+      #body.process(ctx, force)
 
     # The scf.for operation requires indexes as the type, so we cast these to
     # the indextype using the IndexCastOp of the arith dialect
@@ -337,12 +344,8 @@ class SymPyNode(ABC):
       end_cast = IndexCastOp(upbSSA, IndexType())
       step_op = Constant.create(properties={"value": IntegerAttr.from_index_int_value(1)}, result_types=[IndexType()])
 
-      with ImplicitBuilder(block):
-        Constant.create(properties={"value": IntegerAttr.from_index_int_value(1)}, result_types=[IndexType()])
-
-
-      with ImplicitBuilder(block):
-        forLoop = For(start_cast.results[0], end_cast.results[0], step_op.results[0], block_args, bodyBlock)
+      #with ImplicitBuilder(block):
+      forLoop = For(start_cast.results[0], end_cast.results[0], step_op.results[0], block_args, bodyBlock)
   
       forLoop.detach()
 
@@ -359,7 +362,10 @@ class SymPyNoneType(SymPyNode):
   def _process(self: SymPyNoneType, ctx: SSAValueCtx, force = False) -> Operation:
     pass
 
-class SymPyInteger(SymPyNode):
+class SymPyNumeric(SymPyNode):
+  pass
+
+class SymPyInteger(SymPyNumeric):
 
   def _process(self: SymPyInteger, ctx: SSAValueCtx, force = False) -> Operation:
     '''
@@ -376,7 +382,7 @@ class SymPyInteger(SymPyNode):
     return Constant.create(properties={"value": IntegerAttr.from_int_and_width(int(self.sympy().as_expr()), size)}, result_types=[self.type()])
 
 
-class SymPyFloat(SymPyNode):
+class SymPyFloat(SymPyNumeric):
 
   def _process(self: SymPyFloat, ctx: SSAValueCtx, force = False) -> Operation: 
     if self.sympy().__sizeof__() >= 56:
@@ -427,6 +433,8 @@ class SymPyMul(SymPyNode):
   def _process(self: SymPyMul, ctx: SSAValueCtx, force = False) -> Operation: 
     # We process the children and type the node
     childTypes = self.typeOperation(ctx)
+
+    print(f"type {self.type()} childTypes {childTypes}")
 
     # NOTE: As we have processed the child nodes set the 'terminate' flag
     self.terminate(True)
@@ -536,8 +544,8 @@ class SymPyIndexed(SymPyNode):
   def _process(self: SymPyIndexed, ctx: SSAValueCtx, force = False) -> Operation:
     # We process the 'IndexedBase'and 'Idx' nodes here
     self.terminate(True)
-    idxbase = self.child(0).sympy() #.process(ctx, force)
-    idx = self.child(1).sympy() #.process(ctx, force) 
+    idxbase = self.child(0).process(ctx, force)
+    idx = self.child(1).process(ctx, force) 
 
     return self.mlir()
 
@@ -598,7 +606,8 @@ class SymPyEquality(SymPyNode):
     # We dig out the loop bounds from the nested 'Tuple' within the 'Idx' node
     # of the lhs node (self.child(0))
     if isinstance(self.lhs(), SymPyIndexed):
-      
+      loopVars = [ 'i', 'j', 'k' ]
+
       with ImplicitBuilder(self.block(self.parent().block())):
         dims = len(self.lhs().indexes())
         index = self.lhs().idx(0)
@@ -610,22 +619,32 @@ class SymPyEquality(SymPyNode):
         load.detach()
         body += [ load ]
 
-        with ImplicitBuilder(self.block()):
-          for index in reversed(self.lhs().indexes()):
-            index.bounds().child(0).block(self.block())
-            index.bounds().child(1).block(self.block())
+        block = self.block()
+
+        for i, index in enumerate(reversed(self.lhs().indexes())):
+          #bodyBlock = Block(arg_types=self.parent().parent().argTypes())
+          index.bounds().child(0).block(self.block())
+          index.bounds().child(1).block(self.block())
+          lwb = index.bounds().child(0).process(ctx, force)
+          upb = index.bounds().child(1).process(ctx, force)
+          with ImplicitBuilder(block):
             forLoop = SymPyNode.buildFor(
                 self.block(),
                 ctx,
-                index.bounds().child(0).process(ctx, force),
-                index.bounds().child(1).process(ctx, force),
-                body,
+                lwb,
+                upb,
+                self.rhs(),
                 force
             )
+            # We need to map the 'For' loop variable to the SymPy index variable name
+            ctx[self.lhs().idx(i).child(0).sympy().name] = (None, IndexType(), forLoop.body.block.args[0])
+            #self.rhs().process(ctx, force)
+            block = Block(arg_types=self.parent().parent().argTypes())
             #forLoop._parent = None
             #scfYield = Yield(forLoop)
-            body = [ forLoop ]
+            body += [ forLoop ]
 
+    #self.block().add_ops(body)
     return self.mlir(forLoop)
 
 
