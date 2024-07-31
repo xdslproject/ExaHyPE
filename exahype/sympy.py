@@ -76,6 +76,11 @@ from xdsl.utils.test_value import TestSSAValue
 
 @dataclass
 class SSAValueCtx:
+
+    reg: int = 0
+    mlirType: int = 1
+    ssa: int = 2
+
     """
     Context that relates identifiers from the AST to SSA values used in the flat representation.
     """
@@ -232,19 +237,19 @@ class SymPyNode(ABC):
         child.typeOperation(ctx)
 
   def coerceTypes(self: SymPyNode, type1, type2) -> TypeAttribute:
-    # NOTE: we can be passed an ArithmeticOp, so unpack anc docerce
-    if isinstance(self, SymPyArithmeticOp) or issubclass(type(self), SymPyArithmeticOp):
-      return self.child(0).coerceTypes(self.child(0).type(), self.child(1).type())
+    # NOTE: we can be passed an ArithmeticOp, so unpack and do cerce
+    #if isinstance(self, SymPyArithmeticOp) or issubclass(type(self), SymPyArithmeticOp):
+    #  return self.child(0).coerceTypes(self.child(0).type(), self.child(1).type())
 
     # We need to coerce numeric types
     if isinstance(type1, Float64Type) or isinstance(type2, Float64Type):
-      return [ f64 ]
+      return f64 
     elif isinstance(type1, Float32Type) or isinstance(type2, Float32Type):
-      return [ f32 ]
+      return f32
     elif isinstance(type1, type(i64)) or isinstance(type2, type(i64)):
-      return [ i64 ]
+      return i64
     elif isinstance(type1, type(i32)) and isinstance(type2, type(i32)):
-      return [ i32 ]
+      return i32
 
     raise Exception(f"TODO: Coerce operands for operation '{self.sympy()}' ({type(self.sympy())})")
       
@@ -327,29 +332,26 @@ class SymPyNode(ABC):
       case _:
         raise Exception(f"SymPyNode.mapType: type '{type(sympyType)}' not supported")
 
-  def buildFor(block: Block, ctx: SSAValueCtx, lwbSSA: Operation, upbSSA: Operation, body: SymPyNode, force = False) -> For:
-    #with ImplicitBuilder(bodyBlock):
-      # Constant.create(properties={"value": IntegerAttr.from_index_int_value(1)}, result_types=[IndexType()])
-      #body.process(ctx, force)
+  def buildFor(block: Block, ctx: SSAValueCtx, lwbSSA: Operation, upbSSA: Operation, force = False) -> For:
+    # Create the block with our arguments, we will be putting into here the
+    # operations that are part of the loop body
+    block_arg_types=[IndexType()]
+    block_args=[]
+    bodyBlock = Block(arg_types=block_arg_types)
+
+    # NOTE: we process the body outside of the loop creation as 
+    # we need the MLIR (SSA) for the loop indicies
 
     # The scf.for operation requires indexes as the type, so we cast these to
     # the indextype using the IndexCastOp of the arith dialect
-    with ImplicitBuilder(block):
-      # Create the block with our arguments, we will be putting into here the
-      # operations that are part of the loop body
-      block_arg_types=[IndexType()]
-      block_args=[]
-      bodyBlock = Block(arg_types=block_arg_types)
+    start_cast = IndexCastOp(lwbSSA, IndexType())
+    end_cast = IndexCastOp(upbSSA, IndexType())
+    step_op = Constant.create(properties={"value": IntegerAttr.from_index_int_value(1)}, result_types=[IndexType()])
 
-      start_cast = IndexCastOp(lwbSSA, IndexType())
-      end_cast = IndexCastOp(upbSSA, IndexType())
-      step_op = Constant.create(properties={"value": IntegerAttr.from_index_int_value(1)}, result_types=[IndexType()])
+    #with ImplicitBuilder(block):
+    forLoop = For(start_cast.results[0], end_cast.results[0], step_op.results[0], block_args, bodyBlock)
 
-      #with ImplicitBuilder(block):
-      forLoop = For(start_cast.results[0], end_cast.results[0], step_op.results[0], block_args, bodyBlock)
-  
-      #forLoop.detach()
-
+    #forLoop.detach()
 
     return forLoop
     
@@ -368,7 +370,6 @@ class SymPyNumeric(SymPyNode):
 
   def typeOperation(self: SymPyNumeric, ctx: SSAValueCtx) -> TypeAttribute:
     super().typeOperation(ctx)
-    print("SymPyNumeric.typeOperation()")
     return SymPyNode.mapType(self.sympy())
 
 
@@ -390,6 +391,9 @@ class SymPyFloatBaseType(SymPyNumeric):
 
 class SymPyInteger(SymPyNumeric):
   
+  def typeOperation(self: SymPyInteger, ctx: SSAValueCtx) -> TypeAttribute:
+    self.type(IntegerType(64))
+
   def _process(self: SymPyInteger, ctx: SSAValueCtx, force = False) -> Operation:
     '''
       TODO: we will need to understand the context to generate
@@ -400,7 +404,7 @@ class SymPyInteger(SymPyNumeric):
     else:
       size = 32
 
-    return Constant.create(properties={"value": IntegerAttr.from_int_and_width(int(self.sympy().as_expr()), size)}, result_types=[self.type()])
+    return self.mlir(Constant.create(properties={"value": IntegerAttr.from_int_and_width(int(self.sympy().as_expr()), size)}, result_types=[self.type()]))
 
 
 class SymPyFloat(SymPyNumeric):
@@ -411,7 +415,7 @@ class SymPyFloat(SymPyNumeric):
     else:
       size = 32 
     
-    return Constant.create(properties={"value": FloatAttr(float(self.sympy().as_expr()), size)}, result_types=[self.type()])
+    return self.mlir(Constant.create(properties={"value": FloatAttr(float(self.sympy().as_expr()), size)}, result_types=[self.type()]))
 
 
 class SymPyTuple(SymPyNode):
@@ -421,15 +425,19 @@ class SymPyTuple(SymPyNode):
     
     # Now coerce the child type in pairs
     types = set()
-    for child1, child2 in list(zip(self.children(), self.children()[1:] + self.children()[:1])):
-      if isinstance(child1.type(), list):
-        types.add(self.coerceTypes(child1.type()[0], child2.type()))
-      elif isinstance(child2.type(), list):
-        types.add(self.coerceTypes(child1.type(), child2.type()[0]))
-      else:
-        types.add(self.coerceTypes(child1.type(), child2.type()))
+    #for child1, child2 in list(zip(self.children(), self.children()[1:] + self.children()[:1])):
+    #  if isinstance(child1.type(), list):
+    #    types.add(self.coerceTypes(child1.type()[0], child2.type()))
+    #  elif isinstance(child2.type(), list):
+    #    types.add(self.coerceTypes(child1.type(), child2.type()))
+    #  else:
+    #    types.add(self.coerceTypes(child1.type(), child2.type()))
 
-    print(f"SymPyTuple.typeOperation: types {list(dict.fromkeys(types))}")
+    for child in self.children():
+      if isinstance(child.type(), list):
+        types.add(child[0].type())
+      else:
+        types.add(child.type())
 
   def _process(self: SymPyTuple, ctx: SSAValueCtx, force = False) -> Operation:
     print("Tuple")
@@ -439,8 +447,10 @@ class SymPyTuple(SymPyNode):
 class SymPyArithmeticOp(SymPyNode):
 
   def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
-    
+    #super().typeOperation(ctx)
+    self.child(0).typeOperation(ctx)
+    self.child(1).typeOperation(ctx)
+
     # Now coerce the child types  
     self.type(self.coerceTypes(self.child(0).type(), self.child(1).type()))
 
@@ -448,29 +458,41 @@ class SymPyArithmeticOp(SymPyNode):
 class SymPyAdd(SymPyArithmeticOp):
 
   def _process(self: SymPyAdd, ctx: SSAValueCtx, force = False) -> Operation:
+   #with ImplicitBuilder(self.block()):
     # We process the children and type the node
     childTypes = set()
-    for child in self.children():
+    for i, child in enumerate(self.children()):
+      child.process(ctx, force)
+      print(f"Adding: kid{i} {type(child)} ssa {child.mlir()}")
       childTypes.add(child.type())
-    #childTypes = self.typeOperation(ctx)
 
-    print(f"Add {childTypes}")
-    # NOTE: As we have processed the child nodes set the 'terminate' flag
+    # NOTE: As we will process the child nodes here set the 'terminate' flag
     self.terminate(True)
+
+    # TODO: it's more complicated than this...
+    # If we have an array reference:
+    #   i) Create the MLIR constants for the LHS & RHS indices
+    #  ii) Create the memref.load for the RHS
+    # iii) Perform the Addi / Addf 
+    #  iv) Create the memref.store
+    print(f"Adding: self {self.type()}\n kids {self.children()}\n kid types {childTypes}")
+
+    if Indexed in childTypes:
+      print("Got one!")
 
     if (isinstance(self.type(), type(i64))) or (self.type() is i32):
       # TODO: Consider promoting i32 to i64
-      return Addi(self.child(0).process(ctx, force), self.child(1).process(ctx, force))
+      return self.mlir(Addi(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     elif (self.type() is f64) or (self.type() is f32):
       # Promote any the types
       if len(childTypes) == 2:
         # Promote to f32 (float) or f64 (double), as appropriate
         if (childTypes[0] is f32) or (childTypes[0] is f64):
-          return Addf(self.child(0).process(ctx, force), SIToFPOp(self.child(1).process(ctx, force), target_type=self.type()))
+          return self.mlir(Addf(self.child(0).process(ctx, force), SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
         else:
-          return Addf(SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force))
+          return self.mlir(Addf(SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
       else:
-        return Addf(self.child(0).process(ctx, force), self.child(1).process(ctx, force))
+        return self.mlir(Addf(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     else:
         raise Exception(f"Unable to create an MLIR 'Add' operation of type '{self.type()}'")
 
@@ -478,15 +500,25 @@ class SymPyAdd(SymPyArithmeticOp):
 class SymPyMul(SymPyArithmeticOp):
 
   def _process(self: SymPyMul, ctx: SSAValueCtx, force = False) -> Operation: 
+    #with ImplicitBuilder(self.block()):
     # We process the children and type the node
     childTypes = set()
-    for child in self.children():
+    for i, child in enumerate(self.children()):
+      child.process(ctx, force)
+      print(f"Multiplying: kid{i} {type(child)} ssa {child.mlir()}")
       childTypes.add(child.type())
-
-    print(f"type {self.type()} childTypes {childTypes}")
 
     # NOTE: As we have processed the child nodes set the 'terminate' flag
     self.terminate(True)
+
+    # TODO: it's more complicated than this...
+    # If we have an array reference:
+    #   i) Create the MLIR constants for the LHS & RHS indices
+    #  ii) Create the memref.load for the RHS
+    # iii) Perform the Addi / Addf 
+    #  iv) Create the memref.store
+    print(f"Multiplying: kids {childTypes}")
+    
 
     if (self.type() is i64) or (self.type() is i32):
       # TODO: Consider promoting i32 to i64
@@ -564,7 +596,9 @@ class SymPyPow(SymPyArithmeticOp):
 class SymPyIndexedBase(SymPyNode):
   
   def typeOperation(self: SymPyIndexedBase, ctx = SSAValueCtx) -> TypeAttribute:
-    self.type(SymPyNode.mapType(self.sympy()))
+    super().typeOperation(ctx)
+    #self.child(0).typeOperation(ctx)
+    self.type(self.child(0).type()) #SymPyNode.mapType(self.child(0).sympy()))
 
   def _process(self: SymPyIndexedBase, ctx: SSAValueCtx, force = False) -> Operation:
     print("IndexedBase")
@@ -599,7 +633,8 @@ class SymPyIndexed(SymPyNode):
 
   def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> TypeAttribute:
     # TODO: for now, we're only interested in the type of the 'IndexedBase'
-    self.indexedBase().typeOperation(ctx)
+    super().typeOperation(ctx)
+    #self.indexedBase().typeOperation(ctx)
     self.type(self.indexedBase().type())
 
   def _process(self: SymPyIndexed, ctx: SSAValueCtx, force = False) -> Operation:
@@ -631,7 +666,7 @@ class SymPyIdx(SymPyNode):
       self.child(0).process(ctx, force)
       if numKids == 2:
         self.child(1).process(ctx, force)  
-    print(f"Idx arg[0] {type(self.sympy()._args[0])} child(0) {type(self.child(0))}")
+
     return self.mlir()
 
 
@@ -662,8 +697,6 @@ class SymPyEquality(SymPyNode):
     # We dig out the loop bounds from the nested 'Tuple' within the 'Idx' node
     # of the lhs node (self.child(0))
     if isinstance(self.lhs(), SymPyIndexed):
-      loopVars = [ 'i', 'j', 'k' ]
-
       with ImplicitBuilder(self.block(self.parent().block())):
         dims = len(self.lhs().indexes())
         index = self.lhs().idx(0)
@@ -685,18 +718,19 @@ class SymPyEquality(SymPyNode):
           index.bounds().child(1).block(block)
           lwb = index.bounds().child(0).process(ctx, force)
           upb = index.bounds().child(1).process(ctx, force)
+          print(f"index {self.lhs().idx(i).child(0).sympy().name} upb {index.bounds().child(1)}")
           with ImplicitBuilder(block):
             forLoop = SymPyNode.buildFor(
                 block,
                 ctx,
                 lwb,
                 upb,
-                self.rhs(),
                 force
             )
             # We need to map the 'For' loop variable to the SymPy index variable name
             ctx[self.lhs().idx(i).child(0).sympy().name] = (None, IndexType(), forLoop.body.block.args[0])
-            #self.rhs().process(ctx, force)
+            # Now process the loop body
+            self.rhs().process(ctx, force)
             block = Block(arg_types=self.parent().parent().argTypes())
             #forLoop._parent = None
             #scfYield = Yield(forLoop)
@@ -714,12 +748,10 @@ class SymPyCodeBlock(SymPyNode):
     self.terminate(True)
     # If the parent is a FunctionDefinition, we use it's input arguments
     # when we create the block
-    print(f"code block parent {self.parent()}")
     if isinstance(self.parent(), SymPyFunctionDefinition):
       #block = Block(arg_types=self.parent().argTypes()) 
       self.block(self.parent().block())
 
-    print(f"CodeBlock: # kids {len(self.children())}")
     for child in self.children():
       self.block().add_op(child.process(ctx, force))
 
@@ -770,22 +802,10 @@ class SymPyFunctionDefinition(SymPyNode):
 
     # Now map the parameter types
     arg_types = []
-    #for i, arg in enumerate(self.sympy().parameters):
-      # Check to see if we're being passed an 'IndexedBase' as this
-      # represents an array / array reference (the latter for ExaHyPE)
-    #  if isinstance(arg.args[0], IndexedBase):
-    #    arg_type = SymPyNode.mapType(arg.args[0])
-    #    arg_types.append(arg_type)
-    #  else:
-    #    arg_type = SymPyNode.mapType(arg.type)
-    #    arg_types.append(arg_type)
-
     for child in self.children():
-      print(f"child {child.type()}")
       arg_types.append(child.type())
 
     self.argTypes(arg_types)
-    print(f"arg_types {arg_types}")
 
     # TODO: now create the MLIR function definition and translate the body  
     function_name = self.sympy().name
@@ -804,19 +824,18 @@ class SymPyFunctionDefinition(SymPyNode):
     # NOTE: we currently set the visibility of the function to 'public'
     # We may want to be able to change this in the future
     function_visibility = StringAttr('public')
+
     function = func.FuncOp(name=self.sympy().name, function_type=(arg_types, [ return_type ]), region=body, visibility=function_visibility)
     # TODO: For now, we get back the function args for the SSA code but
     # we should find a way to do this above
     for i, arg in enumerate(function.body.block.args):
       if isinstance(self.sympy().parameters[i].args[0], IndexedBase):
         ctx[self.sympy().parameters[i].args[0].name] = (i, arg_types[i], arg)
-        #arg_types.append(arg_type)
       else:
         ctx[self.sympy().parameters[i].symbol.name] = (i, arg_types[i], arg)
-        #arg_types.append(arg_type)
 
     self.body().process(ctx, force)
-    
+
     with ImplicitBuilder(block):
       func.Return()
 
@@ -847,17 +866,16 @@ class SymPySymbol(SymPyNode):
     
     raise Exception(f"SymPySymbol.typeOperation: type '{type(self.sympy())}' not supported")
 
-
   def _process(self: SymPySymbol, ctx: SSAValueCtx, force = False) -> Operation:
     self.terminate(True)
-    print(f"Symbol {ctx[self.sympy().name]}")
-    return self.mlir(ctx[self.sympy().name][2])
+    print(f"Symbol:\nname {self.sympy().name}\n ssa {ctx[self.sympy().name][SSAValueCtx.ssa]}\n ctx {ctx}")
+    return self.mlir(ctx[self.sympy().name][SSAValueCtx.ssa])
 
 
 class SymPyVariable(SymPyNode):
   
   def typeOperation(self: SymPyNode, ctx: SSAValueCtx) -> TypeAttribute:
-    #super().typeOperation(ctx)
+    super().typeOperation(ctx)
 
     if self.sympy().is_integer:
       return self.type(IntegerType(64))
@@ -870,8 +888,10 @@ class SymPyVariable(SymPyNode):
 
   def _process(self: SymPyVariable, ctx: SSAValueCtx, force = False) -> Operation:
     self.terminate(True)
-    print(f"Variable name {self.sympy().symbol.name} SSA %{ctx[self.sympy().symbol.name][0]} type {ctx[self.sympy().symbol.name][1]}")
-    return self.mlir()
+    print(f"Variable.process: {self.sympy()}")
+    #print(f"Variable name {self.sympy().symbol.name} SSA %{ctx[self.sympy().symbol.name][0]} type {ctx[self.sympy().symbol.name][1]}")
+    #ctx[]
+    return self.mlir(ctx[self.sympy().symbol.name][SSAValueCtx.ssa])
 
 
 '''
