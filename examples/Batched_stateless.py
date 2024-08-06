@@ -8,10 +8,11 @@ kernel = general_builder(dim=2,patch_size=4,halo_size=1,n_real=5,n_aux=5)
 
 Q           = kernel.item('Q')
 Q_copy      = kernel.item('Q_copy')
-dt          = kernel.const('dt')
-normal      = kernel.const('normal')
 tmp_flux    = kernel.directional_item('tmp_flux')
 tmp_eig     = kernel.directional_item('tmp_eigen',struct=False)
+
+dt          = kernel.const('dt')
+normal      = kernel.directional_const('normal',[0,1])
 
 Flux        = kernel.function('Flux')
 Eigen       = kernel.function('maxEigenvalue')
@@ -25,10 +26,10 @@ kernel.directional(Q_copy[0], Q_copy[0] + 0.5*(tmp_flux[-1]-tmp_flux[1]))
 
 left        = -Max(tmp_eig[-1],tmp_eig[0])*(Q[0]-Q[-1])
 right       = -Max(tmp_eig[1],tmp_eig[0])*(Q[0]-Q[1])
-kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right))
+kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right),struct=True)
 
 kernel.single(Q[0],Q_copy[0])
 
-# cpp_printer(kernel).file('test.cpp',header='Functions.h')
+cpp_printer(kernel).file('test.cpp',header='Functions.h')
 # cpp_printer(kernel).here()
 

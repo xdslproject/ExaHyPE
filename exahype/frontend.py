@@ -80,8 +80,10 @@ class general_builder:
         self.all_items[expr] = Function(expr)
         return Function(expr)
 
-    def single(self,LHS,RHS='',direction=-1):
-        if str(type(LHS)) in self.functions or str(type(RHS)) in self.functions:
+    def single(self,LHS,RHS='',direction=-1,struct=False):
+        if struct:
+            self.struct_inclusion.append(1)
+        elif str(type(LHS)) in self.functions or str(type(RHS)) in self.functions:
             self.struct_inclusion.append(0)
         elif str(LHS).partition('[')[0] in self.inputs:
             self.struct_inclusion.append(2)
@@ -99,7 +101,7 @@ class general_builder:
         self.LHS.append(self.index(LHS,direction))
         self.RHS.append(self.index(RHS,direction))
 
-    def directional(self,LHS,RHS=''):
+    def directional(self,LHS,RHS='',struct=False):
         for i in range(self.dim):
             for j, key in enumerate(self.directional_consts):
                 if key in str(LHS) or key in str(RHS):
@@ -107,7 +109,7 @@ class general_builder:
                     self.RHS.append(self.directional_consts[key][i])
                     self.struct_inclusion.append(-1)
                     self.directions.append(-1)
-            self.single(LHS,RHS,i+1)
+            self.single(LHS,RHS,i+1,struct)
 
     def index(self,expr_in,direction=-1):
         if expr_in == '':
@@ -125,8 +127,14 @@ class general_builder:
                 if direction >= 0 and word in self.directional_items:
                     thing = ['_patch','_x','_y','_z']
                     expr += thing[direction]
+                    word += thing[direction]
                 expr += char
+
                 for j,index in enumerate(self.indexes):
+                    if word in self.item_struct:
+                        if self.item_struct[word] == 0 and str(index) == 'var':
+                            continue
+
                     if j != 0:
                         expr += ','
                     expr += str(index)
@@ -144,7 +152,6 @@ class general_builder:
                             expr += tmp
                             i += 1
                             tmp = str(expr_in)[i+1]
-
             elif not wait:
                 expr += char
 

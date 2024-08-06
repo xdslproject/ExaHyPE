@@ -54,7 +54,7 @@ class cpp_printer:
         if level == 0:
             r = [0,self.kernel.n_patches]
         elif below == 0:
-            k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)]
+            k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)] + [struct_inclusion]
             match min(k):
                 case 0:
                     r = [0,1]
