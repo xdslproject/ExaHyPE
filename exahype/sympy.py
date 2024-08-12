@@ -61,6 +61,7 @@ from xdsl.dialects.builtin import (
 from xdsl.dialects.llvm import (
   LLVMVoidType,
   LLVMPointerType,
+  LLVMFunctionType,
   GlobalOp,
   ReturnOp,
   ConstantOp 
@@ -716,11 +717,11 @@ class SymPyEquality(SymPyNode):
             lwbSSA = IndexCastOp(lwb.process(ctx, force), IndexType())
             upbSSA = IndexCastOp(upb.process(ctx, force), IndexType())
             stepSSA = None
-            block_arg_types=[IndexType()]
-            block_args=[]
-            bodyBlock = [Block(arg_types=block_arg_types)]
+            blockArgTypes=[IndexType()]
+            blockArgs=[]
+            bodyBlock = [Block(arg_types=blockArgTypes)]
             stepSSA = Constant.from_int_and_width(1, IndexType())
-            forLoop = For(lwbSSA.results[0], upbSSA.results[0], stepSSA.results[0], block_args, bodyBlock)
+            forLoop = For(lwbSSA.results[0], upbSSA.results[0], stepSSA.results[0], blockArgs, bodyBlock)
             # Set the block for the next loop
             previousBlock = block
             block = forLoop.body.block
@@ -791,7 +792,7 @@ class SymPyFunctionDefinition(SymPyNode):
   def typeOperation(self: SymPyFunctionDefinition, ctx: SSAValueCtx) -> TypeAttribute:
     super().typeOperation(ctx)
     # NOTE: we need to type the 'body' here as it isn't a child node
-    self.body().typeOperation(ctx)
+    return self.body().typeOperation(ctx)
 
   def _process(self: SymPyFunctionDefinition, ctx: SSAValueCtx, force = False) -> Operation:
     # NOTE: we process the relevant child nodes here i.e. return type, 
@@ -801,14 +802,12 @@ class SymPyFunctionDefinition(SymPyNode):
     # Create a new context (scope) for the function definition
     ctx = SSAValueCtx(dictionary=dict(), parent_scope=ctx)
 
-    return_type = SymPyNode.mapType(self.sympy().return_type)
-
     # Now map the parameter types
-    arg_types = []
+    argTypes = []
     for child in self.children():
-      arg_types.append(child.type())
+      argTypes.append(child.type())
 
-    self.argTypes(arg_types)
+    self.argTypes(argTypes)
 
     # TODO: now create the MLIR function definition and translate the body  
     function_name = self.sympy().name
@@ -820,26 +819,34 @@ class SymPyFunctionDefinition(SymPyNode):
     body = Region()    
     body.add_block(block)
 
+    if isinstance(self.sympy().return_type, NoneToken):
+      returnTypes = []
+    else:
+      returnTypes = [ SymPyNode.mapType(self.sympy().return_type) ] 
+
     # TODO: *** we use the new block here for self to support the CodeBlock
     # check if this is correct ***
     self.block(block)
 
     # NOTE: we currently set the visibility of the function to 'public'
     # We may want to be able to change this in the future
-    function_visibility = StringAttr('public')
+    visibility = StringAttr('public')
 
-    function = func.FuncOp(name=self.sympy().name, function_type=(arg_types, [ return_type ]), region=body, visibility=function_visibility)
+    function = func.FuncOp(name=self.sympy().name, function_type=(argTypes, returnTypes ), region=body, visibility=visibility)
     # TODO: For now, we get back the function args for the SSA code but
     # we should find a way to do this above
     for i, arg in enumerate(function.body.block.args):
       if isinstance(self.sympy().parameters[i].args[0], IndexedBase):
-        ctx[self.sympy().parameters[i].args[0].name] = (i, arg_types[i], arg)
+        ctx[self.sympy().parameters[i].args[0].name] = (i, argTypes[i], arg)
       else:
-        ctx[self.sympy().parameters[i].symbol.name] = (i, arg_types[i], arg)
+        ctx[self.sympy().parameters[i].symbol.name] = (i, argTypes[i], arg)
 
     self.body().process(ctx, force)
     with ImplicitBuilder(block):
-      func.Return()
+      if len(returnTypes) > 0:
+        func.Return(returnTypes)
+      else:
+        func.Return()
 
     return self.mlir(function)
 
