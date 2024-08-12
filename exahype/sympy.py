@@ -94,6 +94,8 @@ class SymPyNode(ABC):
   
   def __init__(self: SymPyNode, sympy_expr: ast.Token, parent = None, buildChildren = True):
     self._parent: SymPyNode = parent
+    self._root = None
+    self._fnDefs = None
     self._children = []
     self._sympyExpr: ast.Token = sympy_expr
     self._mlirNode: Operation = None
@@ -124,9 +126,20 @@ class SymPyNode(ABC):
       self._value = value
     return self._value
 
-  def walk(self: SymPyNode):
+  def root(self: SymPyNode, root = None):
+    if root is not None:
+      self._root = root
+    return self._root
+
+  def functionDefs(self: SymPyNode, fnDefs = None):
+    if fnDefs is not None:
+      self._fnDefs = fnDefs
+    return self._fnDefs
+
+  def walk(self: SymPyNode, fn, args):
+    fn(self, args)
     for child in self.children():
-      child.walk()
+      child.walk(fn, args)
 
   def print(self: SymPyNode):
     for child in self.children():
@@ -192,6 +205,8 @@ class SymPyNode(ABC):
         node = SymPyCodeBlock(sympy_expr, parent)  
       case ast.FunctionDefinition():
         node = SymPyFunctionDefinition(sympy_expr, parent)
+      case sympy.Function():
+        node = SymPyFunction(sympy_expr, parent)        
       case ast.FunctionCall():
         node = SymPyFunctionCall(sympy_expr, parent)
       case sympy.Equality():
@@ -210,7 +225,7 @@ class SymPyNode(ABC):
       to allow us to transform the new one as appropriate.
     '''
     if delete_source_tree:
-      self.sympy()._args = tuple()
+      node.sympy()._args = tuple()
    
   @abstractmethod
   def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
@@ -709,6 +724,10 @@ class SymPyFunctionDefinition(SymPyNode):
   def __init__(self: SymPyFunctionDefinition, sympy_expr: ast.Token, parent = None):
     # NOTE: we override the auto creation of child nodes to manage 'body' and 'parameters'
     super().__init__(sympy_expr, parent, buildChildren=False)
+    self._noReturn = False
+    self._visible = True
+    self._noBody = False
+    self._external = False
     # Attach the 'body' node directly
     self.body(SymPyNode.build(self.sympy().body, self))
     for child in self.sympy().parameters:
@@ -726,10 +745,30 @@ class SymPyFunctionDefinition(SymPyNode):
       self._body = bodyNode
     return self._body
 
+  def noBody(self: SymPyFunctionDefinition, noBody: bool = None) -> bool:
+    if noBody is not None:
+      self._noBody = noBody
+    return self._noBody
+
   def argTypes(self: SymPyFunctionDefinition, argTypesList: List[ParameterizedAttribute] = None) -> List[ParameterizedAttribute]:
     if argTypesList is not None:
       self._argTypes = argTypesList
     return self._argTypes
+
+  def noReturn(self: SymPyFunctionDefinition, noReturn: bool = None) -> bool:
+    if noReturn is not None:
+      self._noReturn = noReturn
+    return self._noReturn
+
+  def visible(self: SymPyFunctionDefinition, visible: bool = None) -> bool:
+    if visible is not None:
+      self._visible = visible
+    return self._visible
+
+  def external(self: SymPyFunctionDefinition, external: bool = None) -> bool:
+    if external is not None:
+      self._external = external
+    return self._external
 
   def typeOperation(self: SymPyFunctionDefinition, ctx: SSAValueCtx) -> TypeAttribute:
     super().typeOperation(ctx)
@@ -768,11 +807,16 @@ class SymPyFunctionDefinition(SymPyNode):
 
     self.block(block)
 
-    # NOTE: we currently set the visibility of the function to 'public'
-    # We may want to be able to change this in the future
-    visibility = builtin.StringAttr('public')
+    if self.visible():
+      visibility = builtin.StringAttr('public')
+    else:
+      visibility = builtin.StringAttr('private')
 
-    function = func.FuncOp(name=self.sympy().name, function_type=(argTypes, returnTypes ), region=body, visibility=visibility)
+    if self.external():
+      function = func.FuncOp.external(name=self.sympy().name, input_types=argTypes, return_types=returnTypes) 
+      return self.mlir(function)
+    else:
+      function = func.FuncOp(name=self.sympy().name, function_type=(argTypes, returnTypes ), region=body, visibility=visibility)
     # TODO: For now, we get back the function args for the SSA code but
     # we should find a way to do this above
     for i, arg in enumerate(function.body.block.args):
@@ -782,14 +826,33 @@ class SymPyFunctionDefinition(SymPyNode):
         ctx[self.sympy().parameters[i].symbol.name] = (i, argTypes[i], arg)
 
     self.body().process(ctx, force)
-    with ImplicitBuilder(block):
-      if len(returnTypes) > 0:
-        func.Return(returnTypes)
-      else:
-        func.Return()
+
+    if not self.noReturn():
+      with ImplicitBuilder(block):
+        if len(returnTypes) > 0:
+          func.Return(returnTypes)
+        else:
+          func.Return()
 
     return self.mlir(function)
+    
 
+class SymPyFunction(SymPyNode):
+
+  def _process(self: SymPyFunction, ctx: SSAValueCtx, force = False) -> Operation:
+    self.terminate(True)
+    # Add a FunctionDefinition node to the module list to 
+    # generate it at the end of processing
+    sympyFnDef = SymPyFunctionDefinition(ast.FunctionDefinition.from_FunctionPrototype(ast.FunctionPrototype(None, self.sympy().name, []), None))
+    # NOTE: now we make sure the children (arguments) are the same as the 
+    # FunctionCall, in effect dynamic typing the 'external' FunctionDefinition
+    sympyFnDef.children(self.children())
+    # NOTE: we disable the generation of the 'return' statement and make the definition external (and 'private')
+    sympyFnDef.noReturn(True)
+    sympyFnDef.external(True)
+    self.functionDefs().append(sympyFnDef)
+    fnCall = func.Call(self.sympy().name, [ child.process(ctx, force) for child in self.children()], [])
+    return self.mlir(fnCall)
 
 class SymPyFunctionCall(SymPyNode):
 
@@ -868,12 +931,19 @@ class SymPyToMLIR:
     
     mlir_module = builtin.ModuleOp(builtin.Region([builtin.Block()]))
     
+    externalFnDefs = []
+    self.root().walk(lambda node, arg: node.functionDefs(arg), externalFnDefs)
+    
     with ImplicitBuilder(mlir_module.body):
       # Now build the MLIR
       # First, we need a SSAValueCtx object for the MLIR generation
       ctx = SSAValueCtx()
       self.root().typeOperation(ctx)
       self.root().process(ctx)
+
+      # Generate the external function definitions for the FunctionCall objects
+      for fnDef in externalFnDefs:
+        fnDef.process(ctx)
     
     return mlir_module
 
