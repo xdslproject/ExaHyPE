@@ -33,10 +33,11 @@
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
+import types
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import sympy
-from sympy.core import numbers
+from sympy.core import numbers, function
 from sympy.codegen import ast
 from xdsl.builder import Builder, ImplicitBuilder
 from xdsl.ir import Operation, SSAValue, BlockArgument
@@ -53,6 +54,28 @@ from xdsl.dialects.experimental import math
 
  NOTE: This *isn't* an xDSL dialect 
 '''
+
+# Add a return type to a Function class
+class TypedFunction(sympy.Function):
+
+  @classmethod
+  def eval(cls, arg):
+    return sympy.Function.eval(arg)
+
+  def __new__(cls, *args, **options):
+    func = sympy.Function(*args,**options)
+    setattr(func, 'return_type', None)
+    func.returnType = types.MethodType(cls.returnType, func)
+    return func
+
+  def _eval_evalf(self, prec):
+    return super()._eval_evalf(prec)
+
+  def returnType(self: TypedFunction, returnType = None):
+    if returnType is not None:
+      self.return_type = returnType
+    return self.return_type
+
 
 @dataclass
 class SSAValueCtx:
@@ -131,7 +154,7 @@ class SymPyNode(ABC):
       self._root = root
     return self._root
 
-  def functionDefs(self: SymPyNode, fnDefs = None):
+  def functionDefs(self: SymPyNode, fnDefs = None) -> List:
     if fnDefs is not None:
       self._fnDefs = fnDefs
     return self._fnDefs
@@ -310,7 +333,7 @@ class SymPyNode(ABC):
       
   # Map the SymPy AST type to the correct MLIR / LLVM type
   @staticmethod
-  def mapType(sympyType: ast.Token) -> ParameterizedAttribute:
+  def mapType(sympyType: ast.Token, promoteTo64bit: bool = False) -> ParameterizedAttribute:
     # Map function return types to MLIR / LLVM
     if isinstance(sympyType, sympy.IndexedBase):
       # TODO: check that opaque pointers are still correct
@@ -333,12 +356,12 @@ class SymPyNode(ABC):
       case numbers.One():
         return builtin.IntegerType(64)
       case ast.IntBaseType():
-        if sympyType.__sizeof__() >= 56:
+        if (sympyType.__sizeof__()) >= 56 or promoteTo64bit:
           return builtin.IntegerType(64)      
         else:
           return builtin.IntegerType(32)
       case ast.FloatBaseType():
-        if sympyType.__sizeof__() >= 56:
+        if (sympyType.__sizeof__() >= 56) or promoteTo64bit:
           return builtin.Float64Type()     
         else:
           return builtin.Float32Type()
@@ -362,7 +385,8 @@ class SymPyNumeric(SymPyNode):
 
   def typeOperation(self: SymPyNumeric, ctx: SSAValueCtx) -> TypeAttribute:
     super().typeOperation(ctx)
-    return SymPyNode.mapType(self.sympy())
+    # NOTE: for ExaHyPE, we promote all real types to 64-bit
+    return SymPyNode.mapType(self.sympy(), promoteTo64bit=True)
     
 
 class SymPyInteger(SymPyNumeric):
@@ -552,7 +576,6 @@ class SymPyIndexed(SymPyNode):
     for idx in self.children()[1:]:    
       self.indexes().append(idx)
 
-
   def indexedBase(self: SymPyIndexed, indexedBaseNode: SymPyIndexedBased = None) -> SymPyIdx:
     if indexedBaseNode is not None:
       self._indexedBased = indexedBaseNode
@@ -740,6 +763,10 @@ class SymPyFunctionDefinition(SymPyNode):
           self.addChild(SymPyNode.build(child, self)) 
     self._argTypes = None
 
+  def walk(self: SymPyNode, fn, args):
+    super().walk(fn, args)
+    self.body().walk(fn, args)
+
   def body(self: SymPyFunctionDefinition, bodyNode: SymPyNode = None) -> SymPyNode:
     if bodyNode is not None:
       self._body = bodyNode
@@ -803,7 +830,8 @@ class SymPyFunctionDefinition(SymPyNode):
     if isinstance(self.sympy().return_type, ast.NoneToken):
       returnTypes = []
     else:
-      returnTypes = [ SymPyNode.mapType(self.sympy().return_type) ] 
+      # NOTE: for ExaHyPE, we promote all real types to 64-bit
+      returnTypes = [ SymPyNode.mapType(self.sympy().return_type, promoteTo64bit=True) ] 
 
     self.block(block)
 
@@ -843,7 +871,7 @@ class SymPyFunction(SymPyNode):
     self.terminate(True)
     # Add a FunctionDefinition node to the module list to 
     # generate it at the end of processing
-    sympyFnDef = SymPyFunctionDefinition(ast.FunctionDefinition.from_FunctionPrototype(ast.FunctionPrototype(None, self.sympy().name, []), None))
+    sympyFnDef = SymPyFunctionDefinition(ast.FunctionDefinition.from_FunctionPrototype(ast.FunctionPrototype(self.sympy().return_type, self.sympy().name, []), None))
     # NOTE: now we make sure the children (arguments) are the same as the 
     # FunctionCall, in effect dynamic typing the 'external' FunctionDefinition
     sympyFnDef.children(self.children())
@@ -851,7 +879,9 @@ class SymPyFunction(SymPyNode):
     sympyFnDef.noReturn(True)
     sympyFnDef.external(True)
     self.functionDefs().append(sympyFnDef)
-    fnCall = func.Call(self.sympy().name, [ child.process(ctx, force) for child in self.children()], [])
+    # NOTE: for ExaHyPE, we promote all real types to 64-bit
+    self.type(SymPyNode.mapType(self.sympy().return_type, promoteTo64bit=True))
+    fnCall = func.Call(self.sympy().name, [ child.process(ctx, force) for child in self.children()], [self.type()])
     return self.mlir(fnCall)
 
 class SymPyFunctionCall(SymPyNode):
@@ -872,7 +902,8 @@ class SymPySymbol(SymPyNode):
     elif self.sympy().is_real:
       return self.type(builtin.Float64Type())
     else:
-      return self.type(SymPyNode.mapType(self.child(0).sympy()))
+      # NOTE: for ExaHyPE, we promote all real types to 64-bit
+      return self.type(SymPyNode.mapType(self.child(0).sympy(), promoteTo64bit=True))
     raise Exception(f"SymPySymbol.typeOperation: type '{type(self.sympy())}' not supported")
 
   def _process(self: SymPySymbol, ctx: SSAValueCtx, force = False) -> Operation:
@@ -890,7 +921,8 @@ class SymPyVariable(SymPyNode):
     elif self.sympy().is_real:
       return self.type(builtin.Float64Type())
     else:
-      return self.type(SymPyNode.mapType(self.child(0).sympy()))
+      # NOTE: for ExaHyPE, we promote all real types to 64-bit
+      return self.type(SymPyNode.mapType(self.child(0).sympy(), promoteTo64bit=True))
     raise Exception(f"SymPyVariable.typeOperation: type '{type(self.sympy())}' not supported")
 
   def _process(self: SymPyVariable, ctx: SSAValueCtx, force = False) -> Operation:
