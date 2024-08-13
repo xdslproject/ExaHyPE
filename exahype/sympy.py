@@ -202,9 +202,21 @@ class SymPyNode(ABC):
       case sympy.Mul():
         # NOTE: If we have an integer multiplied by another integer 
         # to the power of -1, create a SymPyDiv node <sigh!>
-        if (isinstance(sympy_expr.args[1], sympy.Pow)) and (isinstance(sympy_expr.args[1].args[1], numbers.NegativeOne)):
+        if ( 
+          isinstance(sympy_expr.args[0], sympy.Pow) or 
+          isinstance(sympy_expr.args[1], sympy.Pow) 
+        ) and (
+          isinstance(sympy_expr.args[1].args[1], numbers.NegativeOne) or
+          isinstance(sympy_expr.args[0].args[1], numbers.NegativeOne) 
+        ):
+          if isinstance(sympy_expr.args[0], sympy.Pow):
+            dividend = sympy_expr.args[1]
+            divisor = sympy_expr.args[0].args[0]
+          else:
+            dividend = sympy_expr.args[0]
+            divisor = sympy_expr.args[1].args[0]
           newNode = ast.Token()
-          newNode._args = ( sympy_expr.args[0], sympy_expr.args[1].args[0] )
+          newNode._args = ( dividend, divisor )
           node = SymPyDiv(newNode, parent)
         else:
           node = SymPyMul(sympy_expr, parent)
@@ -543,9 +555,9 @@ class SymPyPow(SymPyArithmeticOp):
       if len(childTypes) == 2:
         # Promote to f32 (float) or f64 (double), as appropriate
         if (list(childTypes)[0] == builtin.f32) or (list(childTypes)[0] == builtin.f64):
-          return self.mlir(math.FPowIOp(self.child(0).process(ctx, force), SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
+          return self.mlir(math.FPowIOp(self.child(0).process(ctx, force), arith.SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
         else:
-          return self.mlir(math.FPowIOp(SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
+          return self.mlir(math.FPowIOp(arith.SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
       else:
         return self.mlir(math.FPowIOp(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     else:
