@@ -49,13 +49,13 @@ from xdsl.dialects.experimental import math
 '''
  Classes to support the transformation of a SymPy AST to MLIR standard dialects.
 
- We want to wrap the SymPy nodes so that we can manipulate the AST structure, as
- SymPy doesn't have a 'parent' *but* we could just add it to the existing nodes.
+ We wrap the SymPy nodes so that we can manipulate the AST structure for MLIR 
+ code generation. There is a SymPyNode sub-class for every SymPy class
 
  NOTE: This *isn't* an xDSL dialect 
 '''
 
-# Add a return type to a Function class
+# Add a return type to a SymPy Function class
 class TypedFunction(sympy.Function):
 
   @classmethod
@@ -427,18 +427,15 @@ class SymPyTuple(SymPyNode):
       else:
         types.add(child.type())
 
-  # TODO: we do nothing with a Tuple at the moment
+  # TODO: we do nothing with a Tuple at the moment (handled by parent nodes)
   def _process(self: SymPyTuple, ctx: SSAValueCtx, force = False) -> Operation:
-    print("Tuple")
     return None
 
 
 class SymPyArithmeticOp(SymPyNode):
 
   def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> TypeAttribute:
-    self.child(0).typeOperation(ctx)
-    self.child(1).typeOperation(ctx)
-
+    super().typeOperation(ctx)
     # Now coerce the child types  
     self.type(SymPyNode.coerceTypes(self.child(0).type(), self.child(1).type()))
 
@@ -875,9 +872,12 @@ class SymPyFunction(SymPyNode):
     # NOTE: now we make sure the children (arguments) are the same as the 
     # FunctionCall, in effect dynamic typing the 'external' FunctionDefinition
     sympyFnDef.children(self.children())
-    # NOTE: we disable the generation of the 'return' statement and make the definition external (and 'private')
+    # NOTE: we disable the generation of the 'return' statement 
+    # and make the definition external (and 'private')
     sympyFnDef.noReturn(True)
     sympyFnDef.external(True)
+    # NOTE: add the FunctionDefinition to the top-level list for 
+    # generation of the external call at the end of the MLIR code
     self.functionDefs().append(sympyFnDef)
     # NOTE: for ExaHyPE, we promote all real types to 64-bit
     self.type(SymPyNode.mapType(self.sympy().return_type, promoteTo64bit=True))
