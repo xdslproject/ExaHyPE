@@ -33,18 +33,17 @@
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
-import types
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from typing_extensions import override
+import types
+import dataclasses
 import sympy
-from sympy.core import numbers, function
+from sympy.core import numbers
 from sympy.codegen import ast
-from xdsl.builder import Builder, ImplicitBuilder
-from xdsl.ir import Operation, SSAValue, BlockArgument
-from xdsl.dialects import builtin, llvm, arith, func, affine, scf, memref
+from xdsl import ir
+from xdsl.builder import ImplicitBuilder
+from xdsl.dialects import builtin, llvm, arith, func, scf, memref
 from xdsl.dialects.experimental import math
-
-
 
 '''
  Classes to support the transformation of a SymPy AST to MLIR standard dialects.
@@ -65,7 +64,9 @@ class TypedFunction(sympy.Function):
   def __new__(cls, *args, **options):
     func = sympy.Function(*args,**options)
     setattr(func, 'return_type', None)
+    setattr(func, 'parameter_types', None)
     func.returnType = types.MethodType(cls.returnType, func)
+    func.parameterTypes = types.MethodType(cls.parameterTypes, func)
     return func
 
   def _eval_evalf(self, prec):
@@ -76,8 +77,13 @@ class TypedFunction(sympy.Function):
       self.return_type = returnType
     return self.return_type
 
+  def parameterTypes(self: TypedFunction, parameterTypes: List = None):
+    if parameterTypes is not None:
+      self._parameter_types = parameterTypes
+    return self._parameter_types
 
-@dataclass
+
+@dataclasses.dataclass
 class SSAValueCtx:
 
     reg: int = 0
@@ -87,10 +93,10 @@ class SSAValueCtx:
     """
     Context that relates identifiers from the AST to SSA values used in the flat representation.
     """
-    dictionary: Dict[str, SSAValue] = field(default_factory=dict)
-    parent_scope: Optional[SSAValueCtx] = None
+    dictionary: types.Dict[str, ir.SSAValue] = dataclasses.field(default_factory=dict)
+    parent_scope: types.Optional[SSAValueCtx] = None
 
-    def __getitem__(self, identifier: str) -> Optional[SSAValue]:
+    def __getitem__(self, identifier: str) -> types.Optional[ir.SSAValue]:
         """Check if the given identifier is in the current scope, or a parent scope"""
         ssa_value = self.dictionary.get(identifier, None)
         if ssa_value:
@@ -100,7 +106,7 @@ class SSAValueCtx:
         else:
             return None
 
-    def __setitem__(self, identifier: str, ssa_value: SSAValue):
+    def __setitem__(self, identifier: str, ssa_value: ir.SSAValue):
         """Relate the given identifier and SSA value in the current scope"""
         self.dictionary[identifier] = ssa_value
 
@@ -121,7 +127,7 @@ class SymPyNode(ABC):
     self._fnDefs = None
     self._children = []
     self._sympyExpr: ast.Token = sympy_expr
-    self._mlirNode: Operation = None
+    self._mlirNode: ir.Operation = None
     self._type = None
     self._mlirBlock = None
     self._terminate = False
@@ -154,7 +160,7 @@ class SymPyNode(ABC):
       self._root = root
     return self._root
 
-  def functionDefs(self: SymPyNode, fnDefs = None) -> List:
+  def functionDefs(self: SymPyNode, fnDefs = None) -> types.List:
     if fnDefs is not None:
       self._fnDefs = fnDefs
     return self._fnDefs
@@ -183,10 +189,12 @@ class SymPyNode(ABC):
     return self._onRight
 
   # We build a new 'wrapper' tree to support MLIR generation.
-  def build(sympy_expr: ast.Token, parent = None, delete_source_tree = False):
+  def build(sympy_expr: ast.Token, parent = None, deleteSourceTree = False):
     node = None
 
     match sympy_expr:
+      case ast.untyped:
+        node = SymPyNoneType(sympy_expr, parent)
       case ast.IntBaseType():
         node = SymPyInteger(sympy_expr, parent)
       case sympy.Integer():
@@ -202,7 +210,7 @@ class SymPyNode(ABC):
       case sympy.Mul():
         # NOTE: If we have an integer multiplied by another integer 
         # to the power of -1, create a SymPyDiv node <sigh!>
-        if ( 
+        if (
           isinstance(sympy_expr.args[0], sympy.Pow) or 
           isinstance(sympy_expr.args[1], sympy.Pow) 
         ) and (
@@ -216,7 +224,7 @@ class SymPyNode(ABC):
             dividend = sympy_expr.args[0]
             divisor = sympy_expr.args[1].args[0]
           newNode = ast.Token()
-          newNode._args = ( dividend, divisor )
+          newNode._args = (dividend, divisor)
           node = SymPyDiv(newNode, parent)
         else:
           node = SymPyMul(sympy_expr, parent)
@@ -232,8 +240,9 @@ class SymPyNode(ABC):
         # child providing the bounds
         node = SymPyIndexed(sympy_expr, parent)
       case sympy.Idx():
-        # Array indexing
         node = SymPyIdx(sympy_expr, parent)
+      case ast.Declaration():
+        node = SymPyDeclaration(sympy_expr, parent)        
       case sympy.Symbol():
         node = SymPySymbol(sympy_expr, parent)
       case ast.CodeBlock():
@@ -242,8 +251,6 @@ class SymPyNode(ABC):
         node = SymPyFunctionDefinition(sympy_expr, parent)
       case sympy.Function():
         node = SymPyFunction(sympy_expr, parent)        
-      case ast.FunctionCall():
-        node = SymPyFunctionCall(sympy_expr, parent)
       case sympy.Equality():
         node = SymPyEquality(sympy_expr, parent)
       case ast.Variable():
@@ -259,11 +266,11 @@ class SymPyNode(ABC):
       We have rebuilt the tree, so we delete the original structure
       to allow us to transform the new one as appropriate.
     '''
-    if delete_source_tree:
+    if deleteSourceTree:
       node.sympy()._args = tuple()
    
   @abstractmethod
-  def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
+  def _process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> ir.Operation:
     pass
 
   '''
@@ -271,7 +278,7 @@ class SymPyNode(ABC):
     NOTE: We pass the current node to the child node processing to
     allow the code to determine the context.
   '''
-  def process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> Operation:
+  def process(self: SymPyNode, ctx: SSAValueCtx, force = False) -> ir.Operation:
     if self.mlir() is None or force: 
       # NOTE: We set the MLIR node here
       self._process(ctx, force)
@@ -283,17 +290,17 @@ class SymPyNode(ABC):
       self.terminate(False)
     return self.mlir()
 
-  def typeOperation(self: SymPyNode, ctx: SSAValueCtx) -> TypeAttribute:
+  def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
     if not self.terminate():
       for child in self.children():
-        child.typeOperation(ctx)
+        child.typeOperation()
 
   def parent(self: SymPyNode, parent: SymPyNode = None) -> SymPyNode:
     if parent is not None:
       self._parent = parent
     return self._parent
 
-  def children(self: SymPyNode, kids: List[SymPyNode] = None) -> SymPyNode:
+  def children(self: SymPyNode, kids: types.List[SymPyNode] = None) -> SymPyNode:
     if kids is not None:
       self._children = kids
     return self._children
@@ -314,7 +321,7 @@ class SymPyNode(ABC):
       self._sympyExpr = sympyExpr
     return self._sympyExpr
 
-  def mlir(self: SymPyNode, mlirOp: Operation = None) -> Operation:
+  def mlir(self: SymPyNode, mlirOp: ir.Operation = None) -> ir.Operation:
     if mlirOp is not None:
       self._mlirNode = mlirOp
     return self._mlirNode
@@ -330,7 +337,7 @@ class SymPyNode(ABC):
     return self._terminate
 
   @staticmethod  
-  def coerceTypes(type1, type2) -> TypeAttribute:
+  def coerceTypes(type1, type2) -> builtin.TypeAttribute:
     # We need to coerce numeric types
     if isinstance(type1, builtin.Float64Type) or isinstance(type2, builtin.Float64Type):
       return builtin.f64 
@@ -345,7 +352,7 @@ class SymPyNode(ABC):
       
   # Map the SymPy AST type to the correct MLIR / LLVM type
   @staticmethod
-  def mapType(sympyType: ast.Token, promoteTo64bit: bool = False) -> ParameterizedAttribute:
+  def mapType(sympyType: ast.Token, promoteTo64bit: bool = False) -> builtin.ParameterizedAttribute:
     # Map function return types to MLIR / LLVM
     if isinstance(sympyType, sympy.IndexedBase):
       # TODO: check that opaque pointers are still correct
@@ -389,24 +396,28 @@ class SymPyNode(ABC):
 '''
 class SymPyNoneType(SymPyNode):
   
-  def _process(self: SymPyNoneType, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyNoneType, ctx: SSAValueCtx, force = False) -> ir.Operation:
     pass
 
 
 class SymPyNumeric(SymPyNode):
 
-  def typeOperation(self: SymPyNumeric, ctx: SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
+  @override
+  def typeOperation(self: SymPyNumeric) -> builtin.TypeAttribute:
+    super().typeOperation()
     # NOTE: for ExaHyPE, we promote all real types to 64-bit
     return SymPyNode.mapType(self.sympy(), promoteTo64bit=True)
     
 
 class SymPyInteger(SymPyNumeric):
   
-  def typeOperation(self: SymPyInteger, ctx: SSAValueCtx) -> TypeAttribute:
+  @override
+  def typeOperation(self: SymPyInteger) -> builtin.TypeAttribute:
     self.type(builtin.IntegerType(64))
 
-  def _process(self: SymPyInteger, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyInteger, ctx: SSAValueCtx, force = False) -> ir.Operation:
     '''
       TODO: we will need to understand the context to generate
       the correct MLIR code i.e. is it an attribute or literal?
@@ -420,7 +431,8 @@ class SymPyInteger(SymPyNumeric):
 
 class SymPyFloat(SymPyNumeric):
 
-  def _process(self: SymPyFloat, ctx: SSAValueCtx, force = False) -> Operation: 
+  @override
+  def _process(self: SymPyFloat, ctx: SSAValueCtx, force = False) -> ir.Operation: 
     if self.type() == builtin.f64:
       size = 64    
     else:
@@ -429,9 +441,10 @@ class SymPyFloat(SymPyNumeric):
 
 
 class SymPyTuple(SymPyNode):
-  
-  def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
+
+  @override 
+  def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> builtin.TypeAttribute:
+    super().typeOperation()
     types = set()
     for child in self.children():
       if isinstance(child.type(), list):
@@ -440,21 +453,24 @@ class SymPyTuple(SymPyNode):
         types.add(child.type())
 
   # TODO: we do nothing with a Tuple at the moment (handled by parent nodes)
-  def _process(self: SymPyTuple, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyTuple, ctx: SSAValueCtx, force = False) -> ir.Operation:
     return None
 
 
 class SymPyArithmeticOp(SymPyNode):
 
-  def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
+  @override
+  def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> builtin.TypeAttribute:
+    super().typeOperation()
     # Now coerce the child types  
     self.type(SymPyNode.coerceTypes(self.child(0).type(), self.child(1).type()))
 
 
 class SymPyAdd(SymPyArithmeticOp):
 
-  def _process(self: SymPyAdd, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyAdd, ctx: SSAValueCtx, force = False) -> ir.Operation:
     # We process the children and type the node
     childTypes = set()
     for i, child in enumerate(self.children()):
@@ -471,9 +487,9 @@ class SymPyAdd(SymPyArithmeticOp):
       if len(childTypes) == 2:
         # Promote to f32 (float) or f64 (double), as appropriate
         if (list(childTypes)[0] == builtin.f32) or (list(childTypes)[0] == builtin.f64):
-          return self.mlir(Addf(self.child(0).process(ctx, force), SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
+          return self.mlir(arith.Addf(self.child(0).process(ctx, force), math.SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
         else:
-          return self.mlir(arith.Addf(SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
+          return self.mlir(arith.Addf(math.SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
       else:
         return self.mlir(arith.Addf(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     else:
@@ -482,7 +498,8 @@ class SymPyAdd(SymPyArithmeticOp):
 
 class SymPyMul(SymPyArithmeticOp):
 
-  def _process(self: SymPyMul, ctx: SSAValueCtx, force = False) -> Operation: 
+  @override
+  def _process(self: SymPyMul, ctx: SSAValueCtx, force = False) -> ir.Operation: 
     # We process the children and type the node
     childTypes = set()
     for i, child in enumerate(self.children()):
@@ -499,9 +516,9 @@ class SymPyMul(SymPyArithmeticOp):
       if len(childTypes) == 2:
         # Promote to f32 (float) or f64 (double), as appropriate
         if (list(childTypes)[0] == builtin.f32) or (list(childTypes)[0] == builtin.f64):
-          return self.mlir(Mulf(self.child(0).process(ctx, force), SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
+          return self.mlir(arith.Mulf(self.child(0).process(ctx, force), arith.SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
         else:
-          return self.mlir(arith.Mulf(SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
+          return self.mlir(arith.Mulf(arith.SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
       else:
         return self.mlir(arith.Mulf(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     else:
@@ -510,7 +527,8 @@ class SymPyMul(SymPyArithmeticOp):
 
 class SymPyDiv(SymPyArithmeticOp):
 
-  def _process(self: SymPyDiv, ctx: SSAValueCtx, force = False) -> Operation: 
+  @override
+  def _process(self: SymPyDiv, ctx: SSAValueCtx, force = False) -> ir.Operation: 
     # We process the children and type the node
     childTypes = set()
     for child in self.children():
@@ -521,15 +539,15 @@ class SymPyDiv(SymPyArithmeticOp):
 
     if (self.type() == builtin.i64) or (self.type() == builtin.i32):
       # TODO: Consider promoting i32 to i64
-      return self.mlir(DivSI(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
+      return self.mlir(arith.DivSI(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     elif (self.type() == builtin.f64) or (self.type() == builtin.f32):
       # Promote any the types
       if len(childTypes) == 2:
         # Promote to f32 (float) or f64 (double), as appropriate
         if (list(childTypes)[0] is builtin.f32) or (list(childTypes)[0] is builtin.f64):
-          return self.mlir(arith.Divf(self.child(0).process(ctx, force), SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
+          return self.mlir(arith.Divf(self.child(0).process(ctx, force), arith.SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
         else:
-          return self.mlir(arith.Divf(SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
+          return self.mlir(arith.Divf(arith.SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
       else:
         return self.mlir(arith.Divf(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     else:
@@ -538,7 +556,8 @@ class SymPyDiv(SymPyArithmeticOp):
 
 class SymPyPow(SymPyArithmeticOp):
 
-  def _process(self: SymPyPow, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyPow, ctx: SSAValueCtx, force = False) -> ir.Operation:
     # We process the children and type the node
     childTypes = set()
     for child in self.children():
@@ -565,18 +584,21 @@ class SymPyPow(SymPyArithmeticOp):
 
 
 class SymPyIndexedBase(SymPyNode):
-  
-  def typeOperation(self: SymPyIndexedBase, ctx = SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
+
+  @override  
+  def typeOperation(self: SymPyIndexedBase, ctx = SSAValueCtx) -> builtin.TypeAttribute:
+    super().typeOperation()
     self.type(self.child(0).type()) 
 
-  def _process(self: SymPyIndexedBase, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyIndexedBase, ctx: SSAValueCtx, force = False) -> ir.Operation:
     # NOTE: process the first child (a Symbol) and return that MLIR
     return self.mlir(self.child(0).process(ctx, force))
 
 
 class SymPyIndexed(SymPyNode):
 
+  @override
   def __init__(self: SymPyIndexed, sympy_expr: ast.Token, parent = None):
     super().__init__(sympy_expr, parent)
     self._indexedBase = self.child(0)
@@ -585,12 +607,12 @@ class SymPyIndexed(SymPyNode):
     for idx in self.children()[1:]:    
       self.indexes().append(idx)
 
-  def indexedBase(self: SymPyIndexed, indexedBaseNode: SymPyIndexedBased = None) -> SymPyIdx:
+  def indexedBase(self: SymPyIndexed, indexedBaseNode: SymPyIndexedBase = None) -> SymPyIdx:
     if indexedBaseNode is not None:
       self._indexedBased = indexedBaseNode
     return self._indexedBase
 
-  def indexes(self: SymPyIndexed, idxNodes: List [ SymPyIdx ] = None) -> SymPyIdx:
+  def indexes(self: SymPyIndexed, idxNodes: types.List[SymPyIdx] = None) -> SymPyIdx:
     if idxNodes is not None:
       self._indexes = idxNodes
     return self._indexes
@@ -600,19 +622,21 @@ class SymPyIndexed(SymPyNode):
       self.indexes()[index] = idxNode
     return self.indexes()[index]
 
-  def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> TypeAttribute:
+  @override
+  def typeOperation(self: SymPyTuple, ctx = SSAValueCtx) -> builtin.TypeAttribute:
     # TODO: for now, we're only interested in the type of the 'IndexedBase'
-    super().typeOperation(ctx)
+    super().typeOperation()
     self.type(self.indexedBase().type())
 
-  def _process(self: SymPyIndexed, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyIndexed, ctx: SSAValueCtx, force = False) -> ir.Operation:
     # We process the 'IndexedBase'and 'Idx' nodes here
     self.terminate(True)
 
     # NOTE: -1 will allow the shape dimensions to be deferred (? in MLIR)
-    shape = [ -1 for idx in self.indexes() ]
+    shape = [-1 for idx in self.indexes()]
 
-    indices = [ idx.process(ctx, force) for idx in self.indexes() ]
+    indices = [idx.process(ctx, force) for idx in self.indexes()]
 
     if self.onLeft():
       # NOTE: we use the SSA value in self.value(), previously created
@@ -622,28 +646,37 @@ class SymPyIndexed(SymPyNode):
 
 
 class SymPyIdx(SymPyNode):
-  
+
+  @override  
   def __init__(self: SymPyIdx, sympy_expr: ast.Token, parent = None):
     super().__init__(sympy_expr, parent)
+    self._name = self.sympy().name   
     self._bounds = self.child(1)
 
-  def bounds(self: SymPyIdx, boundsNode: Tuple = None) -> Tuple:
+  def name(self: SymPyIdx, name: str = None) -> str:
+    if name is not None:
+      self._name = name
+    return self._name
+
+  def bounds(self: SymPyIdx, boundsNode: types.Tuple = None) -> types.Tuple:
     if boundsNode is not None:
       self._bounds = boundsNode
     return self._bounds
 
-  def _process(self: SymPyIdx, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyIdx, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
     # Process the Symbol, creating the MLIR, add a 'name hint' and 
     # add to the context for later lookup
     self.mlir(self.child(0).process(ctx, force))
     self.mlir().name_hint = str(self.child(0).sympy())
-    ctx[self.sympy().name] = (None, builtin.IndexType(), self.mlir())
+    ctx[self.name()] = (None, builtin.IndexType(), self.mlir())
     return self.mlir()
 
 
 class SymPyEquality(SymPyNode):
 
+  @override
   def __init__(self: SymPyEquality, sympy_expr: ast.Token, parent = None):
     super().__init__(sympy_expr, parent)
     self._lhs = self.child(0)
@@ -666,7 +699,8 @@ class SymPyEquality(SymPyNode):
       self._lhs = rhsNode
     return self._rhs    
 
-  def _process(self: SymEquality, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyEquality, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
     # TODO: For now, we assume a SymPy 'Equality' node is the stencil / kernel
     # that we wish to wrap in a 'scf.for' loop. Therefore, we need to drop down
@@ -676,7 +710,6 @@ class SymPyEquality(SymPyNode):
     # of the lhs node (self.child(0))
     if isinstance(self.lhs(), SymPyIndexed):
       with ImplicitBuilder(self.block(self.parent().block())):
-        dims = len(self.lhs().indexes())
         index = self.lhs().idx(0)
 
         # NOTE: make sure the left-hand node knows it is on the LHS...
@@ -712,7 +745,7 @@ class SymPyEquality(SymPyNode):
             previousBlock = block
             block = forLoop.body.block
             # We need to map the 'For' loop variable to the SymPy index variable name
-            ctx[self.lhs().idx(i).child(0).sympy().name] = (None, builtin.IndexType(), forLoop.body.block.args[0])
+            ctx[self.lhs().idx(i).child(0).name()] = (None, builtin.IndexType(), forLoop.body.block.args[0])
             if i == len(self.lhs().indexes()) - 1:
               with ImplicitBuilder(block):
                 # Now process the loop body
@@ -736,7 +769,8 @@ class SymPyEquality(SymPyNode):
 
 class SymPyCodeBlock(SymPyNode):
 
-  def _process(self: SymPyCodeBlock, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyCodeBlock, ctx: SSAValueCtx, force = False) -> ir.Operation:
     # NOTE: We will process all of the child nodes here
     self.terminate(True)
     # If the parent is a FunctionDefinition, we use it's input arguments
@@ -753,9 +787,11 @@ class SymPyCodeBlock(SymPyNode):
 
 class SymPyFunctionDefinition(SymPyNode):
 
+  @override
   def __init__(self: SymPyFunctionDefinition, sympy_expr: ast.Token, parent = None):
     # NOTE: we override the auto creation of child nodes to manage 'body' and 'parameters'
     super().__init__(sympy_expr, parent, buildChildren=False)
+    self._name = self.sympy().name
     self._noReturn = False
     self._visible = True
     self._noBody = False
@@ -772,9 +808,16 @@ class SymPyFunctionDefinition(SymPyNode):
           self.addChild(SymPyNode.build(child, self)) 
     self._argTypes = None
 
+  # NOTE: override 'walk()' to include separate 'body' node
+  @override
   def walk(self: SymPyNode, fn, args):
     super().walk(fn, args)
     self.body().walk(fn, args)
+
+  def name(self: SymPyFunctionDefinition, name: str = None) -> str:
+    if name is not None:
+      self._name = name
+    return self._name
 
   def body(self: SymPyFunctionDefinition, bodyNode: SymPyNode = None) -> SymPyNode:
     if bodyNode is not None:
@@ -786,7 +829,7 @@ class SymPyFunctionDefinition(SymPyNode):
       self._noBody = noBody
     return self._noBody
 
-  def argTypes(self: SymPyFunctionDefinition, argTypesList: List[ParameterizedAttribute] = None) -> List[ParameterizedAttribute]:
+  def argTypes(self: SymPyFunctionDefinition, argTypesList: types.List[builtin.ParameterizedAttribute] = None) -> types.List[builtin.ParameterizedAttribute]:
     if argTypesList is not None:
       self._argTypes = argTypesList
     return self._argTypes
@@ -806,12 +849,14 @@ class SymPyFunctionDefinition(SymPyNode):
       self._external = external
     return self._external
 
-  def typeOperation(self: SymPyFunctionDefinition, ctx: SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
+  @override
+  def typeOperation(self: SymPyFunctionDefinition) -> builtin.TypeAttribute:
+    super().typeOperation()
     # NOTE: we need to type the 'body' here as it isn't a child node
-    return self.body().typeOperation(ctx)
+    return self.body().typeOperation()
 
-  def _process(self: SymPyFunctionDefinition, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyFunctionDefinition, ctx: SSAValueCtx, force = False) -> ir.Operation:
     # NOTE: we process the relevant child nodes here i.e. return type, 
     # parameters and body, so prevent automatic processing of the child
     # nodes by 'SymPyNode.process()' above
@@ -826,9 +871,6 @@ class SymPyFunctionDefinition(SymPyNode):
 
     self.argTypes(argTypes)
 
-    # TODO: now create the MLIR function definition and translate the body  
-    function_name = self.sympy().name
-
     # Create the block for the body of the loop
     # NOTE: add the function argument types to the 'builtin.Block' or they will
     # be 'lost'
@@ -840,7 +882,7 @@ class SymPyFunctionDefinition(SymPyNode):
       returnTypes = []
     else:
       # NOTE: for ExaHyPE, we promote all real types to 64-bit
-      returnTypes = [ SymPyNode.mapType(self.sympy().return_type, promoteTo64bit=True) ] 
+      returnTypes = [SymPyNode.mapType(self.sympy().return_type, promoteTo64bit=True)] 
 
     self.block(block)
 
@@ -850,10 +892,10 @@ class SymPyFunctionDefinition(SymPyNode):
       visibility = builtin.StringAttr('private')
 
     if self.external():
-      function = func.FuncOp.external(name=self.sympy().name, input_types=argTypes, return_types=returnTypes) 
+      function = func.FuncOp.external(name=self.name(), input_types=argTypes, return_types=returnTypes) 
       return self.mlir(function)
     else:
-      function = func.FuncOp(name=self.sympy().name, function_type=(argTypes, returnTypes ), region=body, visibility=visibility)
+      function = func.FuncOp(name=self.name(), function_type=(argTypes, returnTypes), region=body, visibility=visibility)
     # TODO: For now, we get back the function args for the SSA code but
     # we should find a way to do this above
     for i, arg in enumerate(function.body.block.args):
@@ -876,11 +918,22 @@ class SymPyFunctionDefinition(SymPyNode):
 
 class SymPyFunction(SymPyNode):
 
-  def _process(self: SymPyFunction, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def __init__(self: SymPyFunction, sympy_expr: ast.Token, parent = None):
+    super().__init__(sympy_expr, parent, buildChildren=True)
+    self._name = self.sympy().name
+
+  def name(self: SymPyFunction, name: str = None) -> str:
+    if name is not None:
+      self._name = name
+    return self._name
+
+  @override
+  def _process(self: SymPyFunction, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
     # Add a FunctionDefinition node to the module list to 
     # generate it at the end of processing
-    sympyFnDef = SymPyFunctionDefinition(ast.FunctionDefinition.from_FunctionPrototype(ast.FunctionPrototype(self.sympy().return_type, self.sympy().name, []), None))
+    sympyFnDef = SymPyFunctionDefinition(ast.FunctionDefinition.from_FunctionPrototype(ast.FunctionPrototype(self.sympy().return_type, self.name(), []), None))
     # NOTE: now we make sure the children (arguments) are the same as the 
     # FunctionCall, in effect dynamic typing the 'external' FunctionDefinition
     sympyFnDef.children(self.children())
@@ -893,21 +946,63 @@ class SymPyFunction(SymPyNode):
     self.functionDefs().append(sympyFnDef)
     # NOTE: for ExaHyPE, we promote all real types to 64-bit
     self.type(SymPyNode.mapType(self.sympy().return_type, promoteTo64bit=True))
-    fnCall = func.Call(self.sympy().name, [ child.process(ctx, force) for child in self.children()], [self.type()])
+    fnCall = func.Call(self.name(), [child.process(ctx, force) for child in self.children()], [self.type()])
     return self.mlir(fnCall)
 
-class SymPyFunctionCall(SymPyNode):
 
-  def _process(self: SymPyFunctionCall, ctx: SSAValueCtx, force = False) -> Operation:
-    self.terminate(True)
-    print(f"FunctionCall name {self.sympy().name}")
-    return self.mlir()
+class SymPyDeclaration(SymPyNode):
 
+  @override   
+  def __init__(self: SymPyDeclaration, sympy_expr: ast.Token, parent = None):
+    super().__init__(sympy_expr, parent, buildChildren=True)
+    self._name = self.child(0).name()
+
+  def name(self: SymPyDeclaration, name: str = None) -> str:
+    if name is not None:
+      self._name = name
+    return self._name
+
+  @override
+  def _process(self: SymPyDeclaration, ctx: SSAValueCtx, force = False) -> ir.Operation:
+    self.block(self.parent().block())
+
+    # TODO: handle local variable (stack) and pointer allocation
+    dims = []
+    # If the child node of the child ('Variable') node is 'IndexedBase'
+    # work out the dimensions and allocate the array
+    if isinstance(self.child(0).child(0), SymPyIndexedBase):
+      for dim in self.child(0).child(0).child(1).children(): 
+        dims.append(ctx[dim.name()][SSAValueCtx.ssa])
+
+      # TODO: this should use the SymPyNode.type() methods but 
+      # need to override 'typeOperation' for a 'Declaration' node and children
+      if self.child(0).child(0).sympy().is_real:
+        type = builtin.f64
+      else:
+        type = builtin.i64
+        
+      with ImplicitBuilder(self.block()):
+        pntr = memref.Alloc.get(type,64, [-1, -1, -1], dynamic_sizes=dims)
+        pntr.name_hint = self.name()
+        ctx[self.name()] = (None, self.typeOperation(), pntr)
+
+    return self.mlir(pntr)
 
 class SymPySymbol(SymPyNode):
-  
-  def typeOperation(self: SymPyNode, ctx: SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
+
+  @override   
+  def __init__(self: SymPySymbol, sympy_expr: ast.Token, parent = None):
+    super().__init__(sympy_expr, parent, buildChildren=True)
+    self._name = self.sympy().name
+
+  def name(self: SymPySymbol, name: str = None) -> str:
+    if name is not None:
+      self._name = name
+    return self._name
+
+  @override
+  def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
+    super().typeOperation()
 
     if self.sympy().is_integer:
       return self.type(builtin.IntegerType(64))
@@ -918,15 +1013,27 @@ class SymPySymbol(SymPyNode):
       return self.type(SymPyNode.mapType(self.child(0).sympy(), promoteTo64bit=True))
     raise Exception(f"SymPySymbol.typeOperation: type '{type(self.sympy())}' not supported")
 
-  def _process(self: SymPySymbol, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPySymbol, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
-    return self.mlir(ctx[self.sympy().name][SSAValueCtx.ssa])
+    return self.mlir(ctx[self.name()][SSAValueCtx.ssa])
 
 
 class SymPyVariable(SymPyNode):
   
-  def typeOperation(self: SymPyNode, ctx: SSAValueCtx) -> TypeAttribute:
-    super().typeOperation(ctx)
+  @override
+  def __init__(self: SymPyVariable, sympy_expr: ast.Token, parent = None):
+    super().__init__(sympy_expr, parent, buildChildren=True)
+    self._name = self.sympy().symbol.name
+
+  def name(self: SymPyVariable, name: str = None) -> str:
+    if name is not None:
+      self._name = name
+    return self._name
+
+  @override
+  def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
+    super().typeOperation()
 
     if self.sympy().is_integer:
       return self.type(builtin.IntegerType(64))
@@ -937,9 +1044,10 @@ class SymPyVariable(SymPyNode):
       return self.type(SymPyNode.mapType(self.child(0).sympy(), promoteTo64bit=True))
     raise Exception(f"SymPyVariable.typeOperation: type '{type(self.sympy())}' not supported")
 
-  def _process(self: SymPyVariable, ctx: SSAValueCtx, force = False) -> Operation:
+  @override
+  def _process(self: SymPyVariable, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
-    return self.mlir(ctx[self.sympy().symbol.name][SSAValueCtx.ssa])
+    return self.mlir(ctx[self.name()][SSAValueCtx.ssa])
 
 
 '''
@@ -952,7 +1060,7 @@ class SymPyToMLIR:
   def __init__(self: SymPyToMLIR):
     self._root: SymPyNode = None
 
-  def root(self: SymPyMLIR, rootNode: SymPyNode = None) -> SymPyNode:
+  def root(self: SymPyToMLIR, rootNode: SymPyNode = None) -> SymPyNode:
     if rootNode is not None:
       self._root = rootNode
     return self._root
@@ -982,12 +1090,11 @@ class SymPyToMLIR:
       # Now build the MLIR
       # First, we need a SSAValueCtx object for the MLIR generation
       ctx = SSAValueCtx()
-      self.root().typeOperation(ctx)
+      self.root().typeOperation()
       self.root().process(ctx)
 
       # Generate the external function definitions for the FunctionCall objects
       for fnDef in externalFnDefs:
         fnDef.process(ctx)
-    
-    return mlir_module
 
+    return mlir_module
