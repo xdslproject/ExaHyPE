@@ -96,7 +96,7 @@ class SSAValueCtx:
     dictionary: types.Dict[str, ir.SSAValue] = dataclasses.field(default_factory=dict)
     parent_scope: types.Optional[SSAValueCtx] = None
 
-    def __getitem__(self, identifier: str) -> types.Optional[ir.SSAValue]:
+    def __getitem__(self: SSAValueCtx, identifier: str) -> types.Optional[ir.SSAValue]:
         """Check if the given identifier is in the current scope, or a parent scope"""
         ssa_value = self.dictionary.get(identifier, None)
         if ssa_value:
@@ -110,7 +110,7 @@ class SSAValueCtx:
         """Relate the given identifier and SSA value in the current scope"""
         self.dictionary[identifier] = ssa_value
 
-    def copy(self):
+    def copy(self: SSAValueCtx):
       ssa=SSAValueCtx()
       ssa.dictionary=dict(self.dictionary)
       return ssa
@@ -585,15 +585,20 @@ class SymPyPow(SymPyArithmeticOp):
 
 class SymPyIndexedBase(SymPyNode):
 
+  def symbol(self: SymPyVariable, symbol: SymPySymbol = None) -> str:
+    if symbol is not None:
+      self.child(0, symbol)
+    return self.child(0)
+
   @override  
   def typeOperation(self: SymPyIndexedBase, ctx = SSAValueCtx) -> builtin.TypeAttribute:
     super().typeOperation()
-    self.type(self.child(0).type()) 
+    self.type(self.symbol().type()) 
 
   @override
   def _process(self: SymPyIndexedBase, ctx: SSAValueCtx, force = False) -> ir.Operation:
     # NOTE: process the first child (a Symbol) and return that MLIR
-    return self.mlir(self.child(0).process(ctx, force))
+    return self.mlir(self.symbol().process(ctx, force))
 
 
 class SymPyIndexed(SymPyNode):
@@ -658,6 +663,11 @@ class SymPyIdx(SymPyNode):
       self._name = name
     return self._name
 
+  def symbol(self: SymPyVariable, symbol: SymPySymbol = None) -> str:
+    if symbol is not None:
+      self.child(0, symbol)
+    return self.child(0)
+
   def bounds(self: SymPyIdx, boundsNode: types.Tuple = None) -> types.Tuple:
     if boundsNode is not None:
       self._bounds = boundsNode
@@ -668,8 +678,8 @@ class SymPyIdx(SymPyNode):
     self.terminate(True)
     # Process the Symbol, creating the MLIR, add a 'name hint' and 
     # add to the context for later lookup
-    self.mlir(self.child(0).process(ctx, force))
-    self.mlir().name_hint = str(self.child(0).sympy())
+    self.mlir(self.symbol().process(ctx, force))
+    self.mlir().name_hint = str(self.symbol().sympy())
     ctx[self.name()] = (None, builtin.IndexType(), self.mlir())
     return self.mlir()
 
@@ -962,31 +972,35 @@ class SymPyDeclaration(SymPyNode):
       self._name = name
     return self._name
 
+  def variable(self: SymPyVariable, variable: SymPyVariable = None) -> str:
+    if variable is not None:
+      self.child(0, variable)
+    return self.child(0)
+
   @override
   def _process(self: SymPyDeclaration, ctx: SSAValueCtx, force = False) -> ir.Operation:
+    self.terminate(True)
     self.block(self.parent().block())
 
     # TODO: handle local variable (stack) and pointer allocation
     dims = []
     # If the child node of the child ('Variable') node is 'IndexedBase'
     # work out the dimensions and allocate the array
-    if isinstance(self.child(0).child(0), SymPyIndexedBase):
-      for dim in self.child(0).child(0).child(1).children(): 
-        dims.append(ctx[dim.name()][SSAValueCtx.ssa])
+    if isinstance(self.variable().value(), SymPyIndexedBase):
+      for dim in self.variable().value().child(1).children(): 
+        dims.append(arith.IndexCastOp(ctx[dim.name()][SSAValueCtx.ssa], builtin.IndexType()))
 
       # TODO: this should use the SymPyNode.type() methods but 
       # need to override 'typeOperation' for a 'Declaration' node and children
-      if self.child(0).child(0).sympy().is_real:
-        type = builtin.f64
-      else:
-        type = builtin.i64
-        
+      type = self.variable().value().type()
+
       with ImplicitBuilder(self.block()):
-        pntr = memref.Alloc.get(type,64, [-1, -1, -1], dynamic_sizes=dims)
+        pntr = memref.Alloc.get(type, type.get_bitwidth, [-1, -1, -1], dynamic_sizes=dims)
         pntr.name_hint = self.name()
         ctx[self.name()] = (None, self.typeOperation(), pntr)
 
     return self.mlir(pntr)
+
 
 class SymPySymbol(SymPyNode):
 
@@ -1000,6 +1014,11 @@ class SymPySymbol(SymPyNode):
       self._name = name
     return self._name
 
+  def value(self: SymPyVariable, value: SymPyNode = None) -> str:
+    if value is not None:
+      self.child(0, value)
+    return self.child(0)
+
   @override
   def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
     super().typeOperation()
@@ -1010,12 +1029,13 @@ class SymPySymbol(SymPyNode):
       return self.type(builtin.Float64Type())
     else:
       # NOTE: for ExaHyPE, we promote all real types to 64-bit
-      return self.type(SymPyNode.mapType(self.child(0).sympy(), promoteTo64bit=True))
+      return self.type(SymPyNode.mapType(self.value().sympy(), promoteTo64bit=True))
     raise Exception(f"SymPySymbol.typeOperation: type '{type(self.sympy())}' not supported")
 
   @override
   def _process(self: SymPySymbol, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
+    ctx[self.name()][SSAValueCtx.ssa].name_hint = self.name()
     return self.mlir(ctx[self.name()][SSAValueCtx.ssa])
 
 
@@ -1031,6 +1051,11 @@ class SymPyVariable(SymPyNode):
       self._name = name
     return self._name
 
+  def value(self: SymPyVariable, value: SymPyNode = None) -> str:
+    if value is not None:
+      self.child(0, value)
+    return self.child(0)
+
   @override
   def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
     super().typeOperation()
@@ -1041,12 +1066,13 @@ class SymPyVariable(SymPyNode):
       return self.type(builtin.Float64Type())
     else:
       # NOTE: for ExaHyPE, we promote all real types to 64-bit
-      return self.type(SymPyNode.mapType(self.child(0).sympy(), promoteTo64bit=True))
+      return self.type(SymPyNode.mapType(self.value().sympy(), promoteTo64bit=True))
     raise Exception(f"SymPyVariable.typeOperation: type '{type(self.sympy())}' not supported")
 
   @override
   def _process(self: SymPyVariable, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
+    ctx[self.name()][SSAValueCtx.ssa].name_hint = self.name()
     return self.mlir(ctx[self.name()][SSAValueCtx.ssa])
 
 
