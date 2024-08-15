@@ -42,7 +42,7 @@ from sympy.core import numbers
 from sympy.codegen import ast
 from xdsl import ir
 from xdsl.builder import ImplicitBuilder
-from xdsl.dialects import builtin, llvm, arith, func, scf, memref
+from xdsl.dialects import affine, arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.experimental import math
 
 '''
@@ -79,8 +79,8 @@ class TypedFunction(sympy.Function):
 
   def parameterTypes(self: TypedFunction, parameterTypes: List = None):
     if parameterTypes is not None:
-      self._parameter_types = parameterTypes
-    return self._parameter_types
+      self.parameter_types = parameterTypes
+    return self.parameter_types
 
 
 @dataclasses.dataclass
@@ -214,8 +214,8 @@ class SymPyNode(ABC):
           isinstance(sympy_expr.args[0], sympy.Pow) or 
           isinstance(sympy_expr.args[1], sympy.Pow) 
         ) and (
-          isinstance(sympy_expr.args[1].args[1], numbers.NegativeOne) or
-          isinstance(sympy_expr.args[0].args[1], numbers.NegativeOne) 
+          isinstance(sympy_expr.args[0].args[1], numbers.NegativeOne) or
+          isinstance(sympy_expr.args[1].args[1], numbers.NegativeOne)
         ):
           if isinstance(sympy_expr.args[0], sympy.Pow):
             dividend = sympy_expr.args[1]
@@ -384,6 +384,11 @@ class SymPyNode(ABC):
           return builtin.Float64Type()     
         else:
           return builtin.Float32Type()
+      case numbers.Float():
+        if (sympyType.__sizeof__() >= 56) or promoteTo64bit:
+          return builtin.Float64Type()     
+        else:
+          return builtin.Float32Type()
       case ast.NoneToken():
         return llvm.LLVMVoidType()
       case _:
@@ -487,13 +492,13 @@ class SymPyAdd(SymPyArithmeticOp):
       if len(childTypes) == 2:
         # Promote to f32 (float) or f64 (double), as appropriate
         if (list(childTypes)[0] == builtin.f32) or (list(childTypes)[0] == builtin.f64):
-          return self.mlir(arith.Addf(self.child(0).process(ctx, force), math.SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
+          return self.mlir(arith.Addf(self.child(0).process(ctx, force), arith.SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
         else:
-          return self.mlir(arith.Addf(math.SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
+          return self.mlir(arith.Addf(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
       else:
         return self.mlir(arith.Addf(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     else:
-        raise Exception(f"Unable to create an MLIR 'Add' operation of type '{self.type()}'")
+        raise Exception(f"Unable to create an MLIR 'Add' operation of type '{self.type(q)}'")
 
 
 class SymPyMul(SymPyArithmeticOp):
@@ -874,10 +879,18 @@ class SymPyFunctionDefinition(SymPyNode):
     # Create a new context (scope) for the function definition
     ctx = SSAValueCtx(dictionary=dict(), parent_scope=ctx)
 
-    # Now map the parameter types
+    # If we are generateing an 'external' function call definition,
+    # we can check if the parameter types have been defined (manually)
+    # in the 'parent' Function node and use them
     argTypes = []
-    for child in self.children():
-      argTypes.append(child.type())
+    if self.external():
+      if (self.parent() is not None) and (self.parent().sympy().parameterTypes() is not None):
+        for param in self.parent().sympy().parameterTypes():
+          argTypes.append(SymPyNode.mapType(param, promoteTo64bit=True))
+
+    if len(argTypes) == 0:    
+      for child in self.children():
+        argTypes.append(child.type())
 
     self.argTypes(argTypes)
 
@@ -939,11 +952,20 @@ class SymPyFunction(SymPyNode):
     return self._name
 
   @override
+  def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
+    super().typeOperation()
+
+    try: 
+      return self.type(SymPyNode.mapType(self.sympy().returnType(), promoteTo64bit=True))
+    except:
+      raise Exception(f"SymPyFunction.typeOperation: SymPy Function ({self.sympy().__class__} nodes curruently unsupported - use exahype.sympy.TypedFunction.")
+
+  @override
   def _process(self: SymPyFunction, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
     # Add a FunctionDefinition node to the module list to 
     # generate it at the end of processing
-    sympyFnDef = SymPyFunctionDefinition(ast.FunctionDefinition.from_FunctionPrototype(ast.FunctionPrototype(self.sympy().return_type, self.name(), []), None))
+    sympyFnDef = SymPyFunctionDefinition(ast.FunctionDefinition.from_FunctionPrototype(ast.FunctionPrototype(self.sympy().return_type, self.name(), []), None), self)
     # NOTE: now we make sure the children (arguments) are the same as the 
     # FunctionCall, in effect dynamic typing the 'external' FunctionDefinition
     sympyFnDef.children(self.children())
@@ -984,22 +1006,32 @@ class SymPyDeclaration(SymPyNode):
 
     # TODO: handle local variable (stack) and pointer allocation
     dims = []
+    shape = []
     # If the child node of the child ('Variable') node is 'IndexedBase'
     # work out the dimensions and allocate the array
     if isinstance(self.variable().value(), SymPyIndexedBase):
       for dim in self.variable().value().child(1).children(): 
         dims.append(arith.IndexCastOp(ctx[dim.name()][SSAValueCtx.ssa], builtin.IndexType()))
+        shape.append(-1)
 
-      # TODO: this should use the SymPyNode.type() methods but 
-      # need to override 'typeOperation' for a 'Declaration' node and children
       type = self.variable().value().type()
 
       with ImplicitBuilder(self.block()):
-        pntr = memref.Alloc.get(type, type.get_bitwidth, [-1, -1, -1], dynamic_sizes=dims)
+        pntr = memref.Alloc.get(type, type.get_bitwidth, shape, dynamic_sizes=dims)
         pntr.name_hint = self.name()
         ctx[self.name()] = (None, self.typeOperation(), pntr)
 
-    return self.mlir(pntr)
+      return self.mlir(pntr)
+    else:
+      with ImplicitBuilder(self.block()):
+        if self.variable().value().type() == builtin.f64:
+          const = arith.Constant.create(properties={"value": builtin.FloatAttr(float(0), self.variable().value().type().get_bitwidth)}, result_types=[self.variable().value().type()])
+        else:
+          const = arith.Constant.create(properties={"value": builtin.IntegerAttr.from_int_and_width(int(0), self.variable().value().type().get_bitwidth)}, result_types=[self.variable().value().type()])
+        const.name_hint = self.name()
+        ctx[self.name()] = (None, self.typeOperation(), const)
+
+      return self.mlir(const)
 
 
 class SymPySymbol(SymPyNode):
