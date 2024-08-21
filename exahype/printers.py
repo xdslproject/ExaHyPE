@@ -1,22 +1,78 @@
-import numpy as np
-from sympy import *
-# from sympy.utilities.codegen import codegen
-# from sympy.printing import cxxcode, ccode
+# -----------------------------------------------------------------------------
+# BSD 3-Clause License
+#
+# Copyright (c) 2024, Harrison Fullwood and Maurice Jamieson
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+#
+# * Neither the name of the copyright holder nor the names of its
+#   contributors may be used to endorse or promote products derived from
+#   this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+# -----------------------------------------------------------------------------
 
-class cpp_printer:
-    def __init__(self,kernel):
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing_extensions import override
+import types
+import numpy as np
+#from sympy import *
+#import sympy
+from sympy import tensor, core
+from sympy.core import numbers
+from sympy.codegen import ast
+
+class CodePrinter(ABC):
+
+    def __init__(self: CodePrinter, kernel, name: str):
         self.kernel = kernel
+
+    @abstractmethod
+    def loop(self: CodePrinter, expr, direction, below, struct_inclusion):
+        pass
+
+    def file(self: cpp_printer, name: str, header = None):
+        with open(name,'w') as F:
+            F.write(self.code)
+
+
+class cpp_printer(CodePrinter):
+
+    @override
+    def __init__(self, kernel, name: str = "time_step"):
+        super().__init__(kernel, name)
 
         self.INDENT = 1
 
-        self.code = f'void time_step(double* {kernel.inputs[0]}'
+        self.code = f'void {name}(double* {kernel.inputs[0]}'
         for i in range(1,len(kernel.inputs)):
             self.code += f', double {kernel.inputs[i]}'
         self.code += ')' + ' {\n'
 
         #allocate temp arrays
         for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and type(item) == tensor.indexed.IndexedBase:
+            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
                 self.alloc(item)
         #allocate directional consts
         for item in kernel.directional_consts:
@@ -35,7 +91,7 @@ class cpp_printer:
         #delete temp arrays
         self.code += '\n'
         for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and type(item) == tensor.indexed.IndexedBase:
+            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
                 self.indent()
                 self.code += f'delete[] {item};\n'
         self.code += '}\n'
@@ -45,6 +101,7 @@ class cpp_printer:
         if val == 0 or force:
             self.code += (self.INDENT * "\t")
 
+    @override
     def loop(self,expr,direction,below,struct_inclusion):
         level = self.kernel.dim + 1 - below
         idx = self.kernel.indexes[level]
@@ -140,9 +197,6 @@ class cpp_printer:
                             break
                 
                 out += a
-                    
-                        
-                        
             else:
                 unpack = False
                 k = [key for key,val in self.kernel.item_struct.items() if key in item]
@@ -176,17 +230,70 @@ class cpp_printer:
                 
         return out
 
-    def file(self,name='test.cpp',header=None):
+    @override
+    def file(self: cpp_printer, name: str = 'test.cpp', header = None):
         if header != None:
             self.code = f'#include "{header}"\n\n' + self.code
-        F = open(name,'w')
-        F.write(self.code)
+        # This will perform the writing to the file
+        super().file(name, header)
 
     def here(self):
         print(self.code)
 
 
+class MLIRPrinter(CodePrinter):
 
+    @override
+    def __init__(self, kernel, name: str = "time_step"):
+        super().__init__(kernel, name)   
+
+        # TODO: create / augment SymPy objects 
+        # NOTE: for now, we assume that the first input is a double array and
+        #       that all other variables are doubles unless stated
+        params = []
+        shape = [ 1 ]
+        shape += [(self.kernel.patch_size + self.kernel.halo_size) for i in range(self.kernel.dim)]
+        shape.append(1)
+        params.append(tensor.indexed.IndexedBase("Q", real=True, shape=shape)) 
+        for i in range(1,len(kernel.inputs)):
+            params.append(ast.Symbol(kernel.inputs[i], real=True))
+
+        #allocate temp arrays
+        declarations = []
+        for item in self.kernel.all_items.values():
+            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
+                # TODO: we need to declare them as this will
+                # initiate the allocation in MLIR too
+                declarations.append(ast.Declaration(item))
+
+        #allocate directional consts
+        for item in (self.kernel.directional_consts):
+            #self.indent()
+            if isinstance(self.kernel.all_items[item], ast.Symbol):
+                declarations.append(ast.Declaration(self.kernel.all_items[item]))
+            else:
+                declarations.append(ast.Declaration(ast.Symbol(self.kernel.all_items[item], real=True)))
+
+        #loops
+        expr = declarations
+        for l,r,direction,struc in zip(kernel.LHS,kernel.RHS,kernel.directions,kernel.struct_inclusion):
+            if str(l) in kernel.directional_consts:
+                expr.append(ast.Assignment(l,r))
+            else:
+                # TODO: might be best to offload the loop, per Harrison's code
+                pass
+                #self.loop([l,r],direction,kernel.dim+1,struc)
+
+        #delete temp arrays
+        for item in kernel.all_items.values():
+            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
+                # NOTE: set the Symbol (args[0]) to 'none' - 
+                # we'll then generate the 'memref.dealloc' op
+                expr.append(ast.Assignment(item.args[0], ast.none))
+
+    @override
+    def loop(self: CodePrinter, expr, direction, below, struct_inclusion):
+        pass
 
 
 

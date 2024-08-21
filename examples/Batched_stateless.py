@@ -2,7 +2,7 @@ import sys
 sys.path.insert(1,"/home/tvwh77/exahype/DSL/ExaHyPE") #this is for me to use the frontend on my machine, change for your own usage
 
 from exahype.frontend import general_builder
-from exahype.printers import cpp_printer
+from exahype.printers import cpp_printer, MLIRPrinter
 
 kernel = general_builder(dim=2,patch_size=4,halo_size=1,n_real=5,n_aux=5)
 
@@ -31,5 +31,6 @@ kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right),struct=True)
 kernel.single(Q[0],Q_copy[0])
 
 cpp_printer(kernel).file('test.cpp',header='Functions.h')
+MLIRPrinter(kernel)
 # cpp_printer(kernel).here()
 
