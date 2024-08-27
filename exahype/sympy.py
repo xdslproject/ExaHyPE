@@ -234,11 +234,13 @@ class SymPyNode(ABC):
         # Create an array - Symbol is the name and the Tuple is the shape
         node = SymPyIndexedBase(sympy_expr, parent)
       case sympy.Indexed():
+        node = SymPyIndexed(sympy_expr, parent)
+      case ast.For():
+        node = SymPyFor(sympy_expr, parent)        
         # NOTE: For ExaHyPE, we Generate an 'scf.for' here, so we use
         # 'Indexed' as a wrapper for the generation of the loops as it
         # is wrapped in a 'FunctionDefinition', with the 'IndexedBase' 
         # child providing the bounds
-        node = SymPyIndexed(sympy_expr, parent)
       case sympy.Idx():
         node = SymPyIdx(sympy_expr, parent)
       case ast.Declaration():
@@ -432,6 +434,12 @@ class SymPyInteger(SymPyNumeric):
       TODO: we will need to understand the context to generate
       the correct MLIR code i.e. is it an attribute or literal?
     '''
+    if self.parent() is not None:
+      # If we the 'parent' is a SymPyFor, this is a bound, 
+      # so return an 'index' constant
+      if isinstance(self.parent(), SymPyFor):
+        return self.mlir(arith.Constant.from_int_and_width(int(self.sympy().as_expr()), builtin.IndexType()))
+
     if self.type() == builtin.i64:
       size = 64      
     else:
@@ -499,7 +507,11 @@ class SymPyAdd(SymPyArithmeticOp):
         if (list(childTypes)[0] == builtin.f32) or (list(childTypes)[0] == builtin.f64):
           return self.mlir(arith.Addf(self.child(0).process(ctx, force), arith.SIToFPOp(self.child(1).process(ctx, force), target_type=self.type())))
         else:
-          return self.mlir(arith.Addf(arith.SIToFPOp(self.child(0).process(ctx, force),target_type=self.type()), self.child(1).process(ctx, force)))
+          lhsSSA = self.child(0).process(ctx, force)
+          if isinstance(lhsSSA, ir.core.BlockArgument):
+            if isinstance(lhsSSA.type, builtin.IndexType):
+              lhsSSA = arith.IndexCastOp(lhsSSA, builtin.i64)
+          return self.mlir(arith.Addf(arith.SIToFPOp(lhsSSA,target_type=self.type()), self.child(1).process(ctx, force)))
       else:
         return self.mlir(arith.Addf(self.child(0).process(ctx, force), self.child(1).process(ctx, force)))
     else:
@@ -595,10 +607,16 @@ class SymPyPow(SymPyArithmeticOp):
 
 class SymPyIndexedBase(SymPyNode):
 
+  @override
+  def __init__(self: SymPyIndexed, sympy_expr: ast.Token, parent = None):
+    super().__init__(sympy_expr, parent)
+    self._symbol = self.child(0)
+
   def symbol(self: SymPyVariable, symbol: SymPySymbol = None) -> str:
     if symbol is not None:
-      self.child(0, symbol)
-    return self.child(0)
+      #self.child(0, symbol)
+      self._symbol = symbol
+    return self._symbol
 
   @override  
   def typeOperation(self: SymPyIndexedBase, ctx = SSAValueCtx) -> builtin.TypeAttribute:
@@ -673,7 +691,7 @@ class SymPyIdx(SymPyNode):
       self._name = name
     return self._name
 
-  def symbol(self: SymPyVariable, symbol: SymPySymbol = None) -> str:
+  def symbol(self: SymPyIdx, symbol: SymPySymbol = None) -> str:
     if symbol is not None:
       self.child(0, symbol)
     return self.child(0)
@@ -692,6 +710,101 @@ class SymPyIdx(SymPyNode):
     self.mlir().name_hint = str(self.symbol().sympy())
     ctx[self.name()] = (None, builtin.IndexType(), self.mlir())
     return self.mlir()
+
+
+class SymPyFor(SymPyNode):
+
+  @override
+  def __init__(self: SymPyAssignment, sympy_expr: ast.Token, parent = None):
+        super().__init__(sympy_expr, parent, buildChildren=False)
+        # NOTE: we build the child nodes here
+        self.lwb(SymPyNode.build(self.sympy().iterable.args[0], self))
+        self.upb(SymPyNode.build(self.sympy().iterable.args[1], self))
+        self.step(SymPyNode.build(self.sympy().iterable.args[2], self))
+        self.index(SymPyNode.build(self.sympy().target, self))
+        self.body(SymPyNode.build(self.sympy().body, self))
+
+  def lwb(self: SymPyFor, lwbNode: SymPyNode = None) -> SymPyNode:
+    if lwbNode is not None:
+      self._lwb = lwbNode
+    return self._lwb
+
+  def upb(self: SymPyFor, upbNode: SymPyNode = None) -> SymPyNode:
+    if upbNode is not None:
+      self._upb = upbNode
+    return self._upb
+
+  def step(self: SymPyFor, stepNode: SymPyNode = None) -> SymPyNode:
+    if stepNode is not None:
+      self._step = stepNode
+    return self._step
+
+  def index(self: SymPyFor, indexNode: SymPyNode = None) -> SymPyNode:
+    if indexNode is not None:
+      self._index = indexNode
+    return self._index
+
+  def body(self: SymPyFor, bodyNode: SymPyNode = None) -> SymPyNode:
+    if bodyNode is not None:
+      self._body = bodyNode
+    return self._body
+
+  @override
+  def typeOperation(self: SymPyFor) -> builtin.TypeAttribute:
+    # NOTE: we need to type the nodes e.g. 'body' here as 
+    # they aren't SymPyNode child nodes
+    self.lwb().typeOperation()
+    self.upb().typeOperation()
+    self.step().typeOperation()
+    self.index().typeOperation()
+    return self.body().typeOperation()
+
+  @override
+  def _process(self: SymPyFor, ctx: SSAValueCtx, force = False) -> ir.Operation:
+    self.terminate(True)
+    with ImplicitBuilder(self.block(self.parent().block())):
+      block = self.block()
+
+      # TODO: stmpy().iterable contains the bounds and step i.e. Range(0,m,1)
+      # lwb=0, upb=m, step=1
+      index = self.index()
+      # Here we just process a single loop
+      lwb = self.lwb()
+      upb = self.upb()
+      step = self.step()
+      body = self.body()
+      # NOTE: SymPy will subtract 1 [Add(-1)] to the upper bound but
+      # 'affine.for' does *not* include the upper bound, so we should
+      # remove the Add(-1) if it is there
+      if isinstance(upb, SymPyAdd) and isinstance(upb.child(0), SymPyInteger):
+        if upb.child(0).sympy().as_expr() == -1:
+          # Replace the upper bound Add(-1) with the Symbol
+          upb = upb.child(1)
+
+      with ImplicitBuilder(self.block()):
+        lwbSSA = lwb.process(ctx, force)
+        upbSSA = upb.process(ctx, force)
+        stepSSA = step.process(ctx, force)
+        if not isinstance(lwbSSA, arith.Constant):
+          lwbSSA = arith.IndexCastOp(lwbSSA, builtin.IndexType())
+        if not isinstance(upbSSA, arith.Constant):
+          upbSSA = arith.IndexCastOp(upbSSA, builtin.IndexType())
+        if not isinstance(stepSSA, arith.Constant):
+          stepSSA = arith.IndexCastOp(stepSSA, builtin.IndexType())
+        blockArgTypes=[builtin.IndexType()]
+        blockArgs=[]
+        bodyBlock = [builtin.Block(arg_types=blockArgTypes)]
+        forLoop = scf.For(lwbSSA, upbSSA, stepSSA, blockArgs, bodyBlock)
+        
+        # We need to map the 'For' loop variable to the SymPy index variable name
+        ctx[self.index().name()] = (None, builtin.IndexType(), forLoop.body.block.args[0])
+
+        body.block(forLoop.body.block)
+        body.mlir(body.process(ctx, force))
+
+
+    return self.mlir(self.block())
+
 
 
 class SymPyAssignment(SymPyNode):
@@ -728,60 +841,62 @@ class SymPyAssignment(SymPyNode):
     # we can create the wrapping function for now  
     # We dig out the loop bounds from the nested 'Tuple' within the 'Idx' node
     # of the lhs node (self.child(0))
-    with ImplicitBuilder(self.block(self.parent().block())):
-      # NOTE: make sure the left-hand node knows it is on the LHS...
-      self.lhs().onLeft(True)
-      self.lhs().block(self.block())
-      self.rhs().block(self.block())
+    # with ImplicitBuilder(self.block(self.parent().block())):
+    #   # NOTE: make sure the left-hand node knows it is on the LHS...
+    #   self.lhs().onLeft(True)
+    #   self.lhs().block(self.block())
+    #   self.rhs().block(self.block())
 
-      block = self.block()
+    #   block = self.block()
 
-      if isinstance(self.lhs(), SymPyIndexed):
-        index = self.lhs().idx(0)
-        for i, index in enumerate(reversed(self.lhs().indexes())):
-          lwb = index.bounds().child(0)
-          upb = index.bounds().child(1)
-          # NOTE: SymPy will subtract 1 [Add(-1)] to the upper bound but
-          # 'affine.for' does *not* include the upper bound, so we should
-          # remove the Add(-1) if it is there
-          if isinstance(upb, SymPyAdd) and isinstance(upb.child(0), SymPyInteger):
-            if upb.child(0).sympy().as_expr() == -1:
-              # Replace the upper bound Add(-1) with the Symbol
-              upb = upb.child(1)
+    #   if isinstance(self.lhs(), SymPyIndexed):
+    #     index = self.lhs().idx(0)
+    #     for i, index in enumerate(reversed(self.lhs().indexes())):
+    #       lwb = index.bounds().child(0)
+    #       upb = index.bounds().child(1)
+    #       # NOTE: SymPy will subtract 1 [Add(-1)] to the upper bound but
+    #       # 'affine.for' does *not* include the upper bound, so we should
+    #       # remove the Add(-1) if it is there
+    #       if isinstance(upb, SymPyAdd) and isinstance(upb.child(0), SymPyInteger):
+    #         if upb.child(0).sympy().as_expr() == -1:
+    #           # Replace the upper bound Add(-1) with the Symbol
+    #           upb = upb.child(1)
 
-          with ImplicitBuilder(block):
-            lwb.block(block)
-            upb.block(block)
-            lwbSSA = arith.IndexCastOp(lwb.process(ctx, force), builtin.IndexType())
-            upbSSA = arith.IndexCastOp(upb.process(ctx, force), builtin.IndexType())
-            stepSSA = None
-            blockArgTypes=[builtin.IndexType()]
-            blockArgs=[]
-            bodyBlock = [builtin.Block(arg_types=blockArgTypes)]
-            stepSSA = arith.Constant.from_int_and_width(1, builtin.IndexType())
-            forLoop = scf.For(lwbSSA.results[0], upbSSA.results[0], stepSSA.results[0], blockArgs, bodyBlock)
-            # Set the block for the next loop
-            previousBlock = block
-            block = forLoop.body.block
-            # We need to map the 'For' loop variable to the SymPy index variable name
-            ctx[self.lhs().idx(i).child(0).name()] = (None, builtin.IndexType(), forLoop.body.block.args[0])
-            if i == len(self.lhs().indexes()) - 1:
-              with ImplicitBuilder(block):
-                # Now process the loop body
-                self.rhs().process(ctx, force)
-                # NOTE: store this value in the LHS Indexed node before processing
-                self.lhs().value(self.rhs().mlir())
-                self.lhs().process(ctx, force)
-                scf.Yield() 
+    #       with ImplicitBuilder(block):
+    #         lwb.block(block)
+    #         upb.block(block)
+    #         lwbSSA = arith.IndexCastOp(lwb.process(ctx, force), builtin.IndexType())
+    #         upbSSA = arith.IndexCastOp(upb.process(ctx, force), builtin.IndexType())
+    #         stepSSA = None
+    #         blockArgTypes=[builtin.IndexType()]
+    #         blockArgs=[]
+    #         bodyBlock = [builtin.Block(arg_types=blockArgTypes)]
+    #         stepSSA = arith.Constant.from_int_and_width(1, builtin.IndexType())
+    #         forLoop = scf.For(lwbSSA.results[0], upbSSA.results[0], stepSSA.results[0], blockArgs, bodyBlock)
+    #         # Set the block for the next loop
+    #         previousBlock = block
+    #         block = forLoop.body.block
+    #         # We need to map the 'For' loop variable to the SymPy index variable name
+    #         ctx[self.lhs().idx(i).child(0).name()] = (None, builtin.IndexType(), forLoop.body.block.args[0])
+    #         if i == len(self.lhs().indexes()) - 1:
+    #           with ImplicitBuilder(block):
+    #             # Now process the loop body
+    #             self.rhs().process(ctx, force)
+    #             # NOTE: store this value in the LHS Indexed node before processing
+    #             self.lhs().value(self.rhs().mlir())
+    #             self.lhs().process(ctx, force)
+    #             scf.Yield() 
 
-            # NOTE: this will add the 'Yield' to the outer block but this
-            # means that we will get it as the last op, otherwise it preceeds
-            # the enclosed 'For' loop ops (there are other ways to solve this
-            # but this is nice and easy)
-            scf.Yield()
+    #         # NOTE: this will add the 'Yield' to the outer block but this
+    #         # means that we will get it as the last op, otherwise it preceeds
+    #         # the enclosed 'For' loop ops (there are other ways to solve this
+    #         # but this is nice and easy)
+    #         scf.Yield()
 
-      # It's easier to add the Yields as above and then remove the last outer one...
-      self.block()._last_op.detach()
+    #   # It's easier to add the Yields as above and then remove the last outer one...
+    #   self.block()._last_op.detach()
+    
+    block = self.block(self.parent().block())
 
     # NOTE: process a scalar assignment
     with ImplicitBuilder(block):
@@ -892,7 +1007,7 @@ class SymPyFunctionDefinition(SymPyNode):
     # Create a new context (scope) for the function definition
     ctx = SSAValueCtx(dictionary=dict(), parent_scope=ctx)
 
-    # If we are generateing an 'external' function call definition,
+    # If we are generating an 'external' function call definition,
     # we can check if the parameter types have been defined (manually)
     # in the 'parent' Function node and use them
     argTypes = []
@@ -903,7 +1018,11 @@ class SymPyFunctionDefinition(SymPyNode):
 
     if len(argTypes) == 0:    
       for child in self.children():
-        argTypes.append(child.type())
+        # NOTE: we need to manage the array (IndexedBase) parameter types here
+        if isinstance(child.child(0), SymPyIndexedBase):
+          argTypes.append(llvm.LLVMPointerType.opaque())
+        else:
+          argTypes.append(child.type())
 
     self.argTypes(argTypes)
 
@@ -1013,6 +1132,15 @@ class SymPyDeclaration(SymPyNode):
     return self.child(0)
 
   @override
+  def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
+    super().typeOperation()
+
+    try: 
+      return self.type(self.variable().type()) 
+    except:
+      raise Exception(f"SymPyDeclaration.typeOperation: {self.variable().type()} type not supported") 
+
+  @override
   def _process(self: SymPyDeclaration, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
     self.block(self.parent().block())
@@ -1021,7 +1149,7 @@ class SymPyDeclaration(SymPyNode):
       type = SymPyNode.mapType(self.variable().value())
       value = self.variable().value().as_expr()
     else:
-      type = self.variable().value().type()
+      type = self.variable().type()
       value = 0
 
     # TODO: handle local variable (stack) and pointer allocation
@@ -1052,7 +1180,7 @@ class SymPyDeclaration(SymPyNode):
           case builtin.i32: 
             const = arith.Constant.create(properties={"value": builtin.IntegerAttr.from_int_and_width(int(value), 32)}, result_types=[type])
           case _:
-            raise Exception(f"SymPyDeclaration._process(): type '{type}' not supported")
+            raise Exception(f"SymPyDeclaration._process(): for '{self.name()}' of type '{type}' not supported")
 
         const.name_hint = self.name()
         ctx[self.name()] = (None, self.typeOperation(), const)
@@ -1091,12 +1219,15 @@ class SymPySymbol(SymPyNode):
       if self.value() is not None:
         # NOTE: for ExaHyPE, we promote all real types to 64-bit
         return self.type(SymPyNode.mapType(self.value().sympy(), promoteTo64bit=True))
-    #raise Exception(f"SymPySymbol.typeOperation: type '{type(self.sympy())}' not supported")
+    raise Exception(f"SymPySymbol.typeOperation: type '{type(self.sympy())}' not supported")
 
   @override
   def _process(self: SymPySymbol, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
-    ctx[self.name()][SSAValueCtx.ssa].name_hint = self.name()
+    try:
+      ctx[self.name()][SSAValueCtx.ssa].name_hint = self.name()
+    except:
+      raise Exception(f"SymPySymbol._process: '{self.name()}' not declared")
     return self.mlir(ctx[self.name()][SSAValueCtx.ssa])
 
 
@@ -1106,6 +1237,7 @@ class SymPyVariable(SymPyNode):
   def __init__(self: SymPyVariable, sympy_expr: ast.Token, parent = None):
     super().__init__(sympy_expr, parent, buildChildren=True)
     self._name = self.sympy().symbol.name
+    self._symbol = self.child(0)
     # NOTE: we might have a value within the Variable
     match sympy_expr.value:
       case numbers.Integer():
@@ -1134,13 +1266,18 @@ class SymPyVariable(SymPyNode):
     else:
       return None
 
+  def symbol(self: SymPyVariable, symbol: SymPyNode = None) -> SymPyNode:
+    if symbol is not None:
+      self._symbol = symbol
+    return self._symbol
+
   @override
   def typeOperation(self: SymPyNode) -> builtin.TypeAttribute:
     super().typeOperation()
 
-    if self.sympy().is_integer:
+    if self.symbol().sympy().is_integer:
       return self.type(builtin.IntegerType(64))
-    elif self.sympy().is_real:
+    elif self.symbol().sympy().is_real:
       return self.type(builtin.Float64Type())
     else:
       # NOTE: for ExaHyPE, we promote all real types to 64-bit

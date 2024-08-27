@@ -37,11 +37,10 @@ from abc import ABC, abstractmethod
 from typing_extensions import override
 import types
 import numpy as np
-#from sympy import *
-#import sympy
 from sympy import tensor, core
 from sympy.core import numbers
 from sympy.codegen import ast
+from exahype.sympy import SymPyToMLIR
 
 class CodePrinter(ABC):
 
@@ -50,6 +49,10 @@ class CodePrinter(ABC):
 
     @abstractmethod
     def loop(self: CodePrinter, expr, direction, below, struct_inclusion):
+        pass
+
+    @abstractmethod
+    def here(self):
         pass
 
     def file(self: cpp_printer, name: str, header = None):
@@ -237,6 +240,7 @@ class cpp_printer(CodePrinter):
         # This will perform the writing to the file
         super().file(name, header)
 
+    @override
     def here(self):
         print(self.code)
 
@@ -281,7 +285,7 @@ class MLIRPrinter(CodePrinter):
                 expr.append(ast.Assignment(l,r))
             else:
                 # TODO: might be best to offload the loop, per Harrison's code
-                pass
+                print(f"> {l} = {r} {direction} {kernel.dim+1} {struc}")
                 #self.loop([l,r],direction,kernel.dim+1,struc)
 
         #delete temp arrays
@@ -291,10 +295,27 @@ class MLIRPrinter(CodePrinter):
                 # we'll then generate the 'memref.dealloc' op
                 expr.append(ast.Assignment(item.args[0], ast.none))
 
+        self.code = expr
+
     @override
     def loop(self: CodePrinter, expr, direction, below, struct_inclusion):
         pass
 
+    @override
+    def here(self):
+        mlir = SymPyToMLIR()
+        dt = core.Symbol('dt', integer=True)
+        normal = core.Symbol('normal', integer=True)
+        dim = ast.Variable('dim', 2)
+        n_real = ast.Variable('n_real', value=5.5)
+        halo = ast.Variable('halo', 1)
+
+        Q = tensor.IndexedBase("Q", real=True, shape=(n_real,n_real))
+        Q_copy = tensor.IndexedBase("Q_copy", real=True, shape=(n_real,n_real))
+        fp = ast.FunctionPrototype(None, 'time_step', [Q, dt])
+        expr = ast.FunctionDefinition.from_FunctionPrototype(fp, self.code)
+        module = mlir.apply(expr)
+        print(module)
 
 
 
