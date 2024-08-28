@@ -37,10 +37,10 @@ from abc import ABC, abstractmethod
 from typing_extensions import override
 import types
 import numpy as np
-from sympy import tensor, core
+from sympy import tensor, core, Range
 from sympy.core import numbers
 from sympy.codegen import ast
-from exahype.sympy import SymPyToMLIR
+from exahype.sympy import SymPyToMLIR, TypedFunction
 
 class CodePrinter(ABC):
 
@@ -280,14 +280,11 @@ class MLIRPrinter(CodePrinter):
     def __init__(self, kernel, name: str = "time_step"):
         super().__init__(kernel, name)   
 
-        # TODO: create / augment SymPy objects 
         # NOTE: for now, we assume that the first input is a double array and
-        #       that all other variables are doubles unless stated
+        #       that all other variables are doubles unless stated. We don't
+        #       need the dimensions of the double array
         params = []
-        shape = [ 1 ]
-        shape += [(self.kernel.patch_size + self.kernel.halo_size) for i in range(self.kernel.dim)]
-        shape.append(1)
-        params.append(tensor.indexed.IndexedBase("Q", real=True, shape=shape)) 
+        params.append(tensor.indexed.IndexedBase(kernel.inputs[0], real=True)) 
         for i in range(1,len(kernel.inputs)):
             params.append(ast.Symbol(kernel.inputs[i], real=True))
 
@@ -295,13 +292,23 @@ class MLIRPrinter(CodePrinter):
         declarations = []
         for item in self.kernel.all_items.values():
             if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
-                # TODO: we need to declare them as this will
-                # initiate the allocation in MLIR too
+                shape = []
+                shape.append(self.kernel.n_patches)
+                for d in range(self.kernel.dim):
+                    shape.append(self.kernel.patch_size+2*self.kernel.halo_size)
+                #if self.kernel.item_struct[str(item)] == 0:
+                #    continue
+                if str(item) not in self.kernel.items:
+                    shape.append(self.kernel.n_real)
+                else:
+                    shape.append(self.kernel.n_real + self.kernel.n_aux)
+
+                # NOTE: add in the shape
+                item._shape = tuple(shape)
                 declarations.append(ast.Declaration(item))
 
         #allocate directional consts
         for item in (self.kernel.directional_consts):
-            #self.indent()
             if isinstance(self.kernel.all_items[item], ast.Symbol):
                 declarations.append(ast.Declaration(self.kernel.all_items[item]))
             else:
@@ -315,7 +322,9 @@ class MLIRPrinter(CodePrinter):
             else:
                 # TODO: might be best to offload the loop, per Harrison's code
                 print(f"> {l} = {r} {direction} {kernel.dim+1} {struc}")
-                #self.loop([l,r],direction,kernel.dim+1,struc)
+                loop = self.loop([l,r], direction, kernel.dim + 1, struc)
+                print(f"loop {loop}")
+                expr.append(loop)
 
         #delete temp arrays
         for item in kernel.all_items.values():
@@ -324,27 +333,57 @@ class MLIRPrinter(CodePrinter):
                 # we'll then generate the 'memref.dealloc' op
                 expr.append(ast.Assignment(item.args[0], ast.none))
 
-        self.code = expr
+        body = expr
+        fp = ast.FunctionPrototype(None, name, params)
+        fn = ast.FunctionDefinition.from_FunctionPrototype(fp, expr)
+
+        self.code = fn
 
     @override
-    def loop(self: CodePrinter, expr, direction, below, struct_inclusion):
-        pass
+    def loop(self,expr,direction,below,struct_inclusion):
+        level = self.kernel.dim + 1 - below
+        idx = self.kernel.indexes[level]
+        
+        #set loop range using direction and struct_inclusion
+        if level == 0:
+            r = [0,self.kernel.n_patches]
+        elif below == 0:
+            k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)] + [struct_inclusion]
+            match min(k):
+                case 0:
+                    r = [0,1]
+                case 1:
+                    r = [0, self.kernel.n_real]
+                case 2:
+                    r = [0, self.kernel.n_real+self.kernel.n_aux]
+        elif direction == -1:
+            r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
+        elif direction != level and direction >= 0:
+            r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
+        else:
+            r = [self.kernel.halo_size, self.kernel.patch_size + self.kernel.halo_size]
+
+        #add loop code
+        if below > 0: #next loop if have remaining loops
+            body = self.loop(expr,direction,below-1,struct_inclusion)
+        else: #print loop interior
+            if expr[1] == '':
+                body = expr[0]
+            else:
+                body = ast.Assignment(expr[0], expr[1])
+       
+        return ast.For(idx, Range(r[0], r[1]), body=[ body ])
+
 
     @override
     def here(self):
         mlir = SymPyToMLIR()
-        dt = core.Symbol('dt', integer=True)
-        normal = core.Symbol('normal', integer=True)
-        dim = ast.Variable('dim', 2)
-        n_real = ast.Variable('n_real', value=5.5)
-        halo = ast.Variable('halo', 1)
 
-        Q = tensor.IndexedBase("Q", real=True, shape=(n_real,n_real))
-        Q_copy = tensor.IndexedBase("Q_copy", real=True, shape=(n_real,n_real))
-        fp = ast.FunctionPrototype(None, 'time_step', [Q, dt])
-        expr = ast.FunctionDefinition.from_FunctionPrototype(fp, self.code)
-        module = mlir.apply(expr)
+        module = mlir.apply(self.code)
         print(module)
+        return
+
+
 
 
 

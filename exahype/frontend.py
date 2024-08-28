@@ -1,5 +1,6 @@
-# from exahype. import #modules from Maurice
 from sympy import *
+from sympy.codegen.ast import integer, real, none
+from exahype import sympy
 
 def viable(dim,patch_size,halo_size):
     if dim not in [2,3]:
@@ -64,25 +65,25 @@ class general_builder:
             return symbols(expr)
         self.inputs.append(expr)
         self.input_types.append(in_type)
-        return symbols(expr)
+        return symbols(expr, real=True)
 
     def directional_const(self,expr,vals):
         if len(vals) != self.dim:
             raise Exception("directional constant must have values for each direction")
         self.directional_consts[expr] = vals
-        self.all_items[expr] = symbols(expr)
-        return symbols(expr)
+        self.all_items[expr] = symbols(expr, real=True)
+        return symbols(expr, real=True)
         
     def item(self,expr,struct=True,in_type="double*",parent=None):
         self.items.append(expr)
-        self.all_items[expr] = IndexedBase(expr)
+        self.all_items[expr] = IndexedBase(expr, real=True)
         if len(self.items) == 1:
             self.inputs.append(expr)# = expr
             self.input_types.append(in_type)
         self.item_struct[expr] = 0 + struct*2
         if parent != None:
             self.parents[expr] = str(parent)
-        return IndexedBase(expr)
+        return IndexedBase(expr, real=True)
 
     def directional_item(self,expr,struct=True):
         self.directional_items.append(expr)
@@ -92,14 +93,17 @@ class general_builder:
         for i in range(self.dim):
             direction = extra[i]
             tmp = expr + direction
-            self.all_items[tmp] = IndexedBase(tmp)
+            self.all_items[tmp] = IndexedBase(tmp, real=True)
             self.item_struct[tmp] = 0 + struct*1
-        return IndexedBase(expr)
+        return IndexedBase(expr, real=True)
 
-    def function(self,expr):
+    def function(self, expr, parameter_types = [], return_type = none, ):
         self.functions.append(expr)
-        self.all_items[expr] = Function(expr)
-        return Function(expr)
+        func = sympy.TypedFunction(expr)
+        func.returnType(return_type)
+        func.parameterTypes(parameter_types)
+        self.all_items[expr] = func
+        return func
 
     def single(self,LHS,RHS='',direction=-1,struct=False):
         if struct:
