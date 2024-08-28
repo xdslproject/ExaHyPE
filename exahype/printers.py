@@ -73,10 +73,19 @@ class cpp_printer(CodePrinter):
             self.code += f', {kernel.input_types[i]} {kernel.inputs[i]}'
         self.code += ')' + ' {\n'
 
+        if len(kernel.literals) > 0:
+            for _ in kernel.literals:
+                self.indent()
+                self.code += _ + '\n'
+            self.code += '\n'
+
         #allocate temp arrays
         for item in kernel.all_items.values():
             if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
-                self.alloc(item)
+                try:
+                    kernel.parents[str(item)]
+                except KeyError:
+                    self.alloc(item)
         #allocate directional consts
         for item in kernel.directional_consts:
             self.indent()
@@ -95,8 +104,11 @@ class cpp_printer(CodePrinter):
         self.code += '\n'
         for item in kernel.all_items.values():
             if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
-                self.indent()
-                self.code += f'delete[] {item};\n'
+                try:
+                    kernel.parents[str(item)]
+                except KeyError:
+                    self.indent()
+                    self.code += f'delete[] {item};\n'
         self.code += '}\n'
 
     def indent(self,val=0,force=False):
