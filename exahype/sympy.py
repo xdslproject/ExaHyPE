@@ -120,11 +120,12 @@ class SSAValueCtx:
   Base class for SymPy Token wrapper classes, containing structural code
 '''
 class SymPyNode(ABC):
-  
+
+  _fnDefs = []
+
   def __init__(self: SymPyNode, sympy_expr: ast.Token, parent = None, buildChildren = True):
     self._parent: SymPyNode = parent
     self._root = None
-    self._fnDefs = None
     self._children = []
     self._sympyExpr: ast.Token = sympy_expr
     self._mlirNode: ir.Operation = None
@@ -160,10 +161,11 @@ class SymPyNode(ABC):
       self._root = root
     return self._root
 
-  def functionDefs(self: SymPyNode, fnDefs = None) -> types.List:
+  @staticmethod
+  def functionDefs(fnDefs = None) -> types.List:
     if fnDefs is not None:
-      self._fnDefs = fnDefs
-    return self._fnDefs
+      SymPyNode._fnDefs = fnDefs
+    return SymPyNode._fnDefs
 
   def walk(self: SymPyNode, fn, args):
     fn(self, args)
@@ -1107,7 +1109,7 @@ class SymPyFunction(SymPyNode):
     sympyFnDef.external(True)
     # NOTE: add the FunctionDefinition to the top-level list for 
     # generation of the external call at the end of the MLIR code
-    self.functionDefs().append(sympyFnDef)
+    SymPyNode.functionDefs().append(sympyFnDef)
     # NOTE: for ExaHyPE, we promote all real types to 64-bit
     self.type(SymPyNode.mapType(self.sympy().return_type, promoteTo64bit=True))
     fnCall = func.Call(self.name(), [child.process(ctx, force) for child in self.children()], [self.type()])
@@ -1324,8 +1326,8 @@ class SymPyToMLIR:
     
     mlir_module = builtin.ModuleOp(builtin.Region([builtin.Block()]))
     
-    externalFnDefs = []
-    self.root().walk(lambda node, arg: node.functionDefs(arg), externalFnDefs)
+    #externalFnDefs = []
+    #self.root().walk(lambda node, arg: node.functionDefs(arg), externalFnDefs)
     
     with ImplicitBuilder(mlir_module.body):
       # Now build the MLIR
@@ -1335,7 +1337,7 @@ class SymPyToMLIR:
       self.root().process(ctx)
 
       # Generate the external function definitions for the FunctionCall objects
-      for fnDef in externalFnDefs:
+      for fnDef in SymPyNode.functionDefs():
         fnDef.process(ctx)
 
     return mlir_module
