@@ -68,9 +68,9 @@ class cpp_printer(CodePrinter):
 
         self.INDENT = 1
 
-        self.code = f'void {name}(double* {kernel.inputs[0]}'
+        self.code = f'void {name}({kernel.input_types[0]} {kernel.inputs[0]}'
         for i in range(1,len(kernel.inputs)):
-            self.code += f', double {kernel.inputs[i]}'
+            self.code += f', {kernel.input_types[i]} {kernel.inputs[i]}'
         self.code += ')' + ' {\n'
 
         #allocate temp arrays
@@ -158,8 +158,25 @@ class cpp_printer(CodePrinter):
             self.code += f'*{self.kernel.n_real + self.kernel.n_aux}]'
         self.code += ';\n'
 
+    def heritage(self,item): #for inserting parent classes
+        word = ''
+        out = ''
+        item += '1'
+        for a in item:
+            if a.isalpha():
+                word += a
+            else:
+                if word in self.kernel.parents.keys():
+                    out += f'{self.kernel.parents[word]}.{word}'
+                else:
+                    out += word
+                out += a
+                word = ''
+
+        return out[:len(out)-1]
+
     def Cppify(self,item):
-        expr = [str(item)]#_ for _ in str(item).partition('[')]
+        expr = [str(item)]
         active = True
         while active:
             active = False
@@ -199,7 +216,7 @@ class cpp_printer(CodePrinter):
                             a = a.replace(b,f'&{str(b)}')
                             break
                 
-                out += a
+                out += self.heritage(a)
             else:
                 unpack = False
                 k = [key for key,val in self.kernel.item_struct.items() if key in item]

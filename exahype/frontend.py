@@ -26,7 +26,9 @@ class general_builder:
             self.indexes.append(symbols('k', cls=Idx))
         self.indexes.append(symbols('var', cls=Idx))
 
+        self.parents = {}               #which items are parents of which items
         self.inputs = []
+        self.input_types = []
         self.items = []                 #stored as strings
         self.directional_items = []     #stored as strings
         self.directional_consts = {}    #stores values of the const for each direction
@@ -43,9 +45,13 @@ class general_builder:
         self.directions = []            #used for cutting the halo in particular directions
         self.struct_inclusion = []      #how much of the struct to loop over, 0 for none, 1 for n_real, 2 for n_real + n_aux   
 
-    def const(self,expr):
-        self.inputs.append(expr)
+    def const(self,expr,in_type="double",parent=None):
         self.all_items[expr] = symbols(expr)
+        if parent != None:
+            self.parents[expr] = str(parent)
+            return symbols(expr)
+        self.inputs.append(expr)
+        self.input_types.append(in_type)
         return symbols(expr)
 
     def directional_const(self,expr,vals):
@@ -55,12 +61,15 @@ class general_builder:
         self.all_items[expr] = symbols(expr)
         return symbols(expr)
         
-    def item(self,expr,struct=True):
+    def item(self,expr,struct=True,in_type="double*",parent=None):
         self.items.append(expr)
         self.all_items[expr] = IndexedBase(expr)
         if len(self.items) == 1:
             self.inputs.append(expr)# = expr
+            self.input_types.append(in_type)
         self.item_struct[expr] = 0 + struct*2
+        if parent != None:
+            self.parents[expr] = str(parent)
         return IndexedBase(expr)
 
     def directional_item(self,expr,struct=True):
