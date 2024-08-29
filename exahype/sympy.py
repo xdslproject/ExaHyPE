@@ -686,7 +686,8 @@ class SymPyIdx(SymPyNode):
   def __init__(self: SymPyIdx, sympy_expr: ast.Token, parent = None):
     super().__init__(sympy_expr, parent)
     self._name = self.sympy().name   
-    self._bounds = self.child(1)
+    #self._bounds = self.child(1)
+    self._bounds = None
 
   def name(self: SymPyIdx, name: str = None) -> str:
     if name is not None:
@@ -1092,7 +1093,7 @@ class SymPyFunction(SymPyNode):
     try: 
       return self.type(SymPyNode.mapType(self.sympy().returnType(), promoteTo64bit=True))
     except:
-      raise Exception(f"SymPyFunction.typeOperation: SymPy Function ({self.sympy().__class__} nodes curruently unsupported - use exahype.sympy.TypedFunction.")
+      raise Exception(f"SymPyFunction.typeOperation: SymPy Function ({self.sympy().__class__} nodes currently unsupported - use exahype.sympy.TypedFunction.")
 
   @override
   def _process(self: SymPyFunction, ctx: SSAValueCtx, force = False) -> ir.Operation:
@@ -1160,9 +1161,18 @@ class SymPyDeclaration(SymPyNode):
     # If the child node of the child ('Variable') node is 'IndexedBase'
     # work out the dimensions and allocate the array
     if isinstance(self.variable().value(), SymPyIndexedBase):
-      for dim in self.variable().value().child(1).children(): 
-        dims.append(arith.IndexCastOp(ctx[dim.name()][SSAValueCtx.ssa], builtin.IndexType()))
-        shape.append(-1)
+      if self.variable().value().sympy().shape is not None:
+        for dim in self.variable().value().sympy().shape: 
+          if isinstance(dim, sympy.Symbol):
+            dims.append(arith.IndexCastOp(ctx[dim.name][SSAValueCtx.ssa], builtin.IndexType()))
+            shape.append(-1)
+          else:
+            dims.append(arith.IndexCastOp(arith.Constant.from_int_and_width(int(dim), builtin.IndexType()), builtin.IndexType()))
+            shape.append(-1)
+      else:
+        for dim in self.variable().value().child(0).children(): 
+          dims.append(arith.IndexCastOp(ctx[dim.name()][SSAValueCtx.ssa], builtin.IndexType()))
+          shape.append(-1)
 
       with ImplicitBuilder(self.block()):
         pntr = memref.Alloc.get(type, type.get_bitwidth, shape, dynamic_sizes=dims)
@@ -1184,10 +1194,10 @@ class SymPyDeclaration(SymPyNode):
           case _:
             raise Exception(f"SymPyDeclaration._process(): for '{self.name()}' of type '{type}' not supported")
 
-        const.name_hint = self.name()
-        ctx[self.name()] = (None, self.typeOperation(), const)
+      const.name_hint = self.name()
+      ctx[self.name()] = (None, self.typeOperation(), const)
 
-      return self.mlir(const)
+    return self.mlir(const)
 
 
 class SymPySymbol(SymPyNode):
@@ -1204,7 +1214,10 @@ class SymPySymbol(SymPyNode):
 
   def value(self: SymPyVariable, value: SymPyNode = None) -> str:
     if value is not None:
-      self.child(0, value)
+      if len(self.children()) == 0:
+        self.children().append(value)
+      else:
+        self.child(0, value)
     if len(self.children()) > 0:
       return self.child(0)
     return None
@@ -1221,7 +1234,10 @@ class SymPySymbol(SymPyNode):
       if self.value() is not None:
         # NOTE: for ExaHyPE, we promote all real types to 64-bit
         return self.type(SymPyNode.mapType(self.value().sympy(), promoteTo64bit=True))
-    raise Exception(f"SymPySymbol.typeOperation: type '{type(self.sympy())}' not supported")
+      else:
+        # TODO: for now, we assume that a Symbol with no type or value is an integer
+        return self.type(builtin.IntegerType(64))
+    raise Exception(f"SymPySymbol.typeOperation: '{self.name()}' type '{type(self.sympy())}' not supported")
 
   @override
   def _process(self: SymPySymbol, ctx: SSAValueCtx, force = False) -> ir.Operation:
