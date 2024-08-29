@@ -226,7 +226,7 @@ class cpp_printer(CodePrinter):
                     for b in self.kernel.items + self.kernel.directional_items:
                         if b in a:
                             a = a.replace(b,f'&{str(b)}')
-                            break
+                            # break
                 
                 out += self.heritage(a)
             else:
@@ -264,8 +264,11 @@ class cpp_printer(CodePrinter):
 
     @override
     def file(self: cpp_printer, name: str = 'test.cpp', header = None):
+        inclusions = '#include "exahype2/UserInterface.h"\n#include "observers/CreateGrid.h"\n#include "observers/CreateGridAndConvergeLoadBalancing.h"\n#include "observers/CreateGridButPostponeRefinement.h"\n#include "observers/InitGrid.h"\n#include "observers/PlotSolution.h"\n#include "observers/TimeStep.h"\n#include "peano4/peano.h"\n#include "repositories/DataRepository.h"\n#include "repositories/SolverRepository.h"\n#include "repositories/StepRepository.h"\n#include "tarch/accelerator/accelerator.h"\n#include "tarch/accelerator/Device.h"\n#include "tarch/logging/CommandLineLogger.h"\n#include "tarch/logging/Log.h"\n#include "tarch/logging/LogFilter.h"\n#include "tarch/logging/Statistics.h"\n#include "tarch/multicore/Core.h"\n#include "tarch/multicore/multicore.h"\n#include "tarch/multicore/otter.h"\n#include "tarch/NonCriticalAssertions.h"\n#include "tarch/timing/Measurement.h"\n#include "tarch/timing/Watch.h"\n#include "tasks/FVRusanovSolverEnclaveTask.h"\n#include "toolbox/loadbalancing/loadbalancing.h"\n\n'
+        self.code = inclusions + self.code
         if header != None:
             self.code = f'#include "{header}"\n\n' + self.code
+        
         # This will perform the writing to the file
         super().file(name, header)
 
