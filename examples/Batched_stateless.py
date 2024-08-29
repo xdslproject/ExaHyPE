@@ -18,7 +18,7 @@ normal      = kernel.directional_const('normal',[0,1])
 
 Flux        = kernel.function('Flux', parameter_types=[real, real, real], return_type=none)
 Eigen       = kernel.function('maxEigenvalue', parameter_types=[real, real], return_type=none)
-Max         = kernel.function('max', parameter_types=[real, real], return_type=real)
+Max         = kernel.function('max', parameter_types=[real, real], return_type=none)
 
 kernel.single(Q_copy[0],Q[0])
 kernel.directional(Flux(Q_copy[0],normal,tmp_flux[0]))

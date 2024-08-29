@@ -452,6 +452,10 @@ class SymPyInteger(SymPyNumeric):
 class SymPyFloat(SymPyNumeric):
 
   @override
+  def typeOperation(self: SymPyFloat) -> builtin.TypeAttribute:
+    self.type(builtin.Float64Type())
+
+  @override
   def _process(self: SymPyFloat, ctx: SSAValueCtx, force = False) -> ir.Operation: 
     if self.type() == builtin.f64:
       size = 64    
@@ -838,67 +842,6 @@ class SymPyAssignment(SymPyNode):
   @override
   def _process(self: SymPyAssignment, ctx: SSAValueCtx, force = False) -> ir.Operation:
     self.terminate(True)
-    # TODO: For now, we assume a SymPy 'Equality' node is the stencil / kernel
-    # that we wish to wrap in a 'scf.for' loop. Therefore, we need to drop down
-    # and extract the array / arrays, with associated shape / dimensions. Then
-    # we can create the wrapping function for now  
-    # We dig out the loop bounds from the nested 'Tuple' within the 'Idx' node
-    # of the lhs node (self.child(0))
-    # with ImplicitBuilder(self.block(self.parent().block())):
-    #   # NOTE: make sure the left-hand node knows it is on the LHS...
-    #   self.lhs().onLeft(True)
-    #   self.lhs().block(self.block())
-    #   self.rhs().block(self.block())
-
-    #   block = self.block()
-
-    #   if isinstance(self.lhs(), SymPyIndexed):
-    #     index = self.lhs().idx(0)
-    #     for i, index in enumerate(reversed(self.lhs().indexes())):
-    #       lwb = index.bounds().child(0)
-    #       upb = index.bounds().child(1)
-    #       # NOTE: SymPy will subtract 1 [Add(-1)] to the upper bound but
-    #       # 'affine.for' does *not* include the upper bound, so we should
-    #       # remove the Add(-1) if it is there
-    #       if isinstance(upb, SymPyAdd) and isinstance(upb.child(0), SymPyInteger):
-    #         if upb.child(0).sympy().as_expr() == -1:
-    #           # Replace the upper bound Add(-1) with the Symbol
-    #           upb = upb.child(1)
-
-    #       with ImplicitBuilder(block):
-    #         lwb.block(block)
-    #         upb.block(block)
-    #         lwbSSA = arith.IndexCastOp(lwb.process(ctx, force), builtin.IndexType())
-    #         upbSSA = arith.IndexCastOp(upb.process(ctx, force), builtin.IndexType())
-    #         stepSSA = None
-    #         blockArgTypes=[builtin.IndexType()]
-    #         blockArgs=[]
-    #         bodyBlock = [builtin.Block(arg_types=blockArgTypes)]
-    #         stepSSA = arith.Constant.from_int_and_width(1, builtin.IndexType())
-    #         forLoop = scf.For(lwbSSA.results[0], upbSSA.results[0], stepSSA.results[0], blockArgs, bodyBlock)
-    #         # Set the block for the next loop
-    #         previousBlock = block
-    #         block = forLoop.body.block
-    #         # We need to map the 'For' loop variable to the SymPy index variable name
-    #         ctx[self.lhs().idx(i).child(0).name()] = (None, builtin.IndexType(), forLoop.body.block.args[0])
-    #         if i == len(self.lhs().indexes()) - 1:
-    #           with ImplicitBuilder(block):
-    #             # Now process the loop body
-    #             self.rhs().process(ctx, force)
-    #             # NOTE: store this value in the LHS Indexed node before processing
-    #             self.lhs().value(self.rhs().mlir())
-    #             self.lhs().process(ctx, force)
-    #             scf.Yield() 
-
-    #         # NOTE: this will add the 'Yield' to the outer block but this
-    #         # means that we will get it as the last op, otherwise it preceeds
-    #         # the enclosed 'For' loop ops (there are other ways to solve this
-    #         # but this is nice and easy)
-    #         scf.Yield()
-
-    #   # It's easier to add the Yields as above and then remove the last outer one...
-    #   self.block()._last_op.detach()
-    
     block = self.block(self.parent().block())
 
     # NOTE: process a scalar assignment

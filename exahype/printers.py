@@ -295,9 +295,7 @@ class MLIRPrinter(CodePrinter):
                 expr.append(ast.Assignment(l,r))
             else:
                 # TODO: might be best to offload the loop, per Harrison's code
-                print(f"> {l} = {r} {direction} {kernel.dim+1} {struc}")
                 loop = self.loop([l,r], direction, kernel.dim + 1, struc)
-                print(f"loop {loop}")
                 expr.append(loop)
 
         #delete temp arrays
@@ -309,7 +307,7 @@ class MLIRPrinter(CodePrinter):
 
         body = expr
         fp = ast.FunctionPrototype(None, name, params)
-        fn = ast.FunctionDefinition.from_FunctionPrototype(fp, expr)
+        fn = ast.FunctionDefinition.from_FunctionPrototype(fp, body)
 
         self.code = fn
 
@@ -345,7 +343,7 @@ class MLIRPrinter(CodePrinter):
                 body = expr[0]
             else:
                 body = ast.Assignment(expr[0], expr[1])
-       
+
         return ast.For(idx, Range(r[0], r[1]), body=[ body ])
 
 
