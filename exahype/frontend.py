@@ -29,7 +29,6 @@ class general_builder:
 
         self.literals = []              #lines written in c++
 
-
         self.parents = {}               #which items are parents of which items
         self.inputs = []
         self.input_types = []
@@ -97,7 +96,9 @@ class general_builder:
             self.item_struct[tmp] = 0 + struct*1
         return IndexedBase(expr, real=True)
 
-    def function(self, expr, parameter_types = [], return_type = none, ):
+    def function(self, expr, parent=None, parameter_types = [], return_type = none, ):
+        if parent != None:
+            self.parents[expr] = str(parent)
         self.functions.append(expr)
         func = sympy.TypedFunction(expr)
         func.returnType(return_type)
@@ -178,6 +179,8 @@ class general_builder:
                             expr += tmp
                             i += 1
                             tmp = str(expr_in)[i+1]
+                    elif word == self.items[1] and str(index) != 'var':
+                        expr += '-1'
             elif not wait:
                 expr += char
 
