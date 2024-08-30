@@ -1,6 +1,7 @@
 import sys
 sys.path.insert(1,"/home/tvwh77/exahype/DSL/ExaHyPE") #this is for me to use the frontend on my machine, change for your own usage
 
+from sympy import IndexedBase
 from sympy.codegen.ast import integer, real, none
 from exahype.frontend import general_builder
 from exahype.printers import cpp_printer, MLIRPrinter
@@ -16,9 +17,11 @@ tmp_eig     = kernel.directional_item('tmp_eigen',struct=False)
 dt          = kernel.const('dt')
 normal      = kernel.directional_const('normal',[0,1])
 
-Flux        = kernel.function('Flux', parameter_types=[real, real, real], return_type=none)
-Eigen       = kernel.function('maxEigenvalue', parameter_types=[real, real], return_type=none)
-Max         = kernel.function('max', parameter_types=[real, real], return_type=none)
+# NOTE: we use Q as a parameter type in 'Flux', 'maxEigenvalue' and 'max' as it
+# is an SymPy IndexedBase object which is resolved to a llvm.ptr in MLIR
+Flux        = kernel.function('Flux', parameter_types=[Q, real, Q], return_type=integer)
+Eigen       = kernel.function('maxEigenvalue', parameter_types=[Q, real], return_type=real)
+Max         = kernel.function('max', parameter_types=[Q, Q], return_type=none)
 
 kernel.single(Q_copy[0],Q[0])
 kernel.directional(Flux(Q_copy[0],normal,tmp_flux[0]))

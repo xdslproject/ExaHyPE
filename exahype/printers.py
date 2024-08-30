@@ -351,6 +351,7 @@ class MLIRPrinter(CodePrinter):
     def here(self):
         mlir = SymPyToMLIR()
 
+        print(self.code)
         module = mlir.apply(self.code)
         print(module)
         return
