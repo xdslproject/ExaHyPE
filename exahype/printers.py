@@ -98,6 +98,7 @@ class cpp_printer(CodePrinter):
                 self.indent()
                 self.code += f'delete[] {item};\n'
         self.code += '}\n'
+        self.parse()
 
     def indent(self,val=0,force=False):
         self.INDENT += val
@@ -108,11 +109,12 @@ class cpp_printer(CodePrinter):
     def loop(self,expr,direction,below,struct_inclusion):
         level = self.kernel.dim + 1 - below
         idx = self.kernel.indexes[level]
-        self.indent()
         
+
         #set loop range using direction and struct_inclusion
         if level == 0:
             r = [0,self.kernel.n_patches]
+            # print(str(expr))
         elif below == 0:
             k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)] + [struct_inclusion]
             match min(k):
@@ -123,14 +125,20 @@ class cpp_printer(CodePrinter):
                 case 2:
                     r = [0, self.kernel.n_real+self.kernel.n_aux]
         elif direction == -1:
-            r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
+            r = [self.kernel.halo_size, self.kernel.patch_size + self.kernel.halo_size]
+            # r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
         elif direction != level and direction >= 0:
             r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
         else:
             r = [self.kernel.halo_size, self.kernel.patch_size + self.kernel.halo_size]
 
+        
         #add loop code
-        self.code += f"for (int {idx} = {r[0]}; {idx} < {r[1]}; {idx}++)" + " {\n"
+        if str(idx) == 'var' and r[1] == 1:
+            self.indent(-1)
+        else:
+            self.indent()
+            self.code += f"for (int {idx} = {r[0]}; {idx} < {r[1]}; {idx}++)" + " {\n"
         if below > 0: #next loop if have remaining loops
             self.indent(1)
             self.loop(expr,direction,below-1,struct_inclusion)
@@ -142,8 +150,17 @@ class cpp_printer(CodePrinter):
             else:
                 self.code += f'{self.Cppify(expr[0])} = {self.Cppify(expr[1])};\n'
             self.indent(-1)
-        self.indent()
-        self.code += "}\n"
+        if str(idx) == 'var' and r[1] == 1: #removing unnecessary 'vars'
+            self.indent(1)
+            i = len(self.code) - 2
+            while self.code[i] != '\n':
+                if self.code[i:i+6] == ' + var':
+                    self.code = self.code[:i] + self.code[i+6:]
+                i -= 1
+            None
+        else:
+            self.indent()
+            self.code += "}\n"
         
     def alloc(self,item):
         self.indent()
@@ -157,6 +174,28 @@ class cpp_printer(CodePrinter):
         else:
             self.code += f'*{self.kernel.n_real + self.kernel.n_aux}]'
         self.code += ';\n'
+
+    def heritage(self,item): #for inserting parent classes
+        word = ''
+        out = ''
+        item += '1'
+        for a in item:
+            if a.isalpha():
+                word += a
+            else:
+                if word in self.kernel.parents.keys():
+                    upper = self.kernel.parents[word]
+                    if upper[-1] == ":":
+                        out += f'{upper}{word}'
+                    else:
+                        out += f'{upper}.{word}'
+                else:
+                    out += word
+                out += a
+                word = ''
+
+        return out[:len(out)-1]
+
 
     def Cppify(self,item):
         expr = [str(item)]#_ for _ in str(item).partition('[')]
@@ -197,7 +236,7 @@ class cpp_printer(CodePrinter):
                     for b in self.kernel.items + self.kernel.directional_items:
                         if b in a:
                             a = a.replace(b,f'&{str(b)}')
-                            break
+                            # break
                 
                 out += a
                     
@@ -213,16 +252,16 @@ class cpp_printer(CodePrinter):
                         leap = self.kernel.n_real
                     case 2:
                         leap = self.kernel.n_real + self.kernel.n_aux
-                size = self.kernel.patch_size + 2*self.kernel.halo_size
+                if k[0] == self.kernel.items[1]:
+                    size = self.kernel.patch_size
+                else:
+                    size = self.kernel.patch_size + 2*self.kernel.halo_size
                 strides = [leap*size**2,leap*size,leap]
                 if self.kernel.dim == 3:
                     strides = [leap*size**3] + strides
                 i = 0
                 for char in a.split(','):
                     char = char.strip()
-                    # if char == 'var' and self.kernels.item_struct[item] == 0:
-                    #     out = out[0:len(out)-1]
-                    #     continue
                     if i != 0:
                         out += ' + '
                     if i < len(strides):
@@ -236,10 +275,57 @@ class cpp_printer(CodePrinter):
                 
         return out
 
+    def parse(self):
+        mother = str(self.kernel.inputs[0])
+        j = 0
+        begin = False
+        offset = 0
+        replaces = []
+
+        for i,char in enumerate(self.code):
+            if char == '{' and not begin:
+                begin = True
+            i += offset
+            if begin:
+                if j < len(mother):
+                    if char == mother[j]:
+                        j += 1
+                    else:
+                        j = 0
+                elif j == len(mother):
+                    if char != '.':
+                        j = 0
+                    else:
+                        l = i + 1
+                        while self.code[l].isalpha():# not in ['[','*',',',' ']:
+                            l += 1
+                        k = l
+                        if self.code[l] == '[':
+                            l += 1
+                            k += 1
+                            while str(self.code[k]) != '+':
+                                k += 1
+                            k += 2
+                            self.code = self.code[:l] + "patch][" + self.code[k:]
+                        else:
+                            self.code = self.code[:l] + "[patch]" + self.code[k:]
+                        offset += l - k + 7
+                        j = 0
+
+        # for item in replaces:
+        #     l, k = item
+        #     self.code = self.code[:l] + "patch][" + self.code[k:]
+
+
+
+
     @override
     def file(self: cpp_printer, name: str = 'test.cpp', header = None):
+        inclusions = '#include "exahype2/UserInterface.h"\n#include "observers/CreateGrid.h"\n#include "observers/CreateGridAndConvergeLoadBalancing.h"\n#include "observers/CreateGridButPostponeRefinement.h"\n#include "observers/InitGrid.h"\n#include "observers/PlotSolution.h"\n#include "observers/TimeStep.h"\n#include "peano4/peano.h"\n#include "repositories/DataRepository.h"\n#include "repositories/SolverRepository.h"\n#include "repositories/StepRepository.h"\n#include "tarch/accelerator/accelerator.h"\n#include "tarch/accelerator/Device.h"\n#include "tarch/logging/CommandLineLogger.h"\n#include "tarch/logging/Log.h"\n#include "tarch/logging/LogFilter.h"\n#include "tarch/logging/Statistics.h"\n#include "tarch/multicore/Core.h"\n#include "tarch/multicore/multicore.h"\n#include "tarch/multicore/otter.h"\n#include "tarch/NonCriticalAssertions.h"\n#include "tarch/timing/Measurement.h"\n#include "tarch/timing/Watch.h"\n#include "tasks/FVRusanovSolverEnclaveTask.h"\n#include "toolbox/loadbalancing/loadbalancing.h"\n\n'
+        self.code = inclusions + self.code
         if header != None:
             self.code = f'#include "{header}"\n\n' + self.code
+        
         # This will perform the writing to the file
         super().file(name, header)
 

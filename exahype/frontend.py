@@ -28,6 +28,8 @@ class general_builder:
             self.indexes.append(symbols('k', cls=Idx))
         self.indexes.append(symbols('var', cls=Idx))
 
+        self.literals = []              #lines written in c++
+        self.parents = {}               #which items are parents of which items
         self.inputs = []
         self.items = []                 #stored as strings
         self.directional_items = []     #stored as strings
@@ -43,9 +45,22 @@ class general_builder:
         self.LHS = []
         self.RHS = []
         self.directions = []            #used for cutting the halo in particular directions
-        self.struct_inclusion = []      #how much of the struct to loop over, 0 for none, 1 for n_real, 2 for n_real + n_aux   
+        self.struct_inclusion = []      #how much of the struct to loop over, 0 for none, 1 for n_real, 2 for n_real + n_aux  
 
-    def const(self,expr):
+        self.const('dim',define=f'int dim = {dim};')
+        self.const('patch_size',define=f'int patch_size = {patch_size};')
+        self.const('halo_size',define=f'int halo_size = {halo_size};')
+        self.const('n_real',define=f'int n_real = {n_real};')
+        self.const('n_aux',define=f'int n_aux = {n_aux};')
+
+    def const(self,expr,in_type="double",parent=None,define=None):
+        self.all_items[expr] = symbols(expr)
+        if parent != None:
+            self.parents[expr] = str(parent)
+            return symbols(expr)
+        if define != None:
+            self.literals.append(define)
+
         self.inputs.append(expr)
         self.all_items[expr] = symbols(expr, real=True)
         return symbols(expr, real=True)
@@ -77,7 +92,9 @@ class general_builder:
             self.item_struct[tmp] = 0 + struct*1
         return IndexedBase(expr, real=True)
 
-    def function(self, expr, parameter_types = [], return_type = none, ):
+    def function(self, expr, parent=None, parameter_types = [], return_type = none, ):
+        if parent != None:
+            self.parents[expr] = str(parent)
         self.functions.append(expr)
         func = sympy.TypedFunction(expr)
         func.returnType(return_type)
@@ -127,6 +144,11 @@ class general_builder:
             if char == ']':
                 wait = False
 
+            if direction >= 0 and word in self.directional_items and not (str(expr_in)+"1")[i+1].isalpha():
+                thing = ['_patch','_x','_y','_z']
+                expr += thing[direction]
+                word += thing[direction]
+
             if char == '[':
                 wait = True
                 if direction >= 0 and word in self.directional_items:
@@ -157,6 +179,8 @@ class general_builder:
                             expr += tmp
                             i += 1
                             tmp = str(expr_in)[i+1]
+                    elif word == self.items[1] and str(index) != 'var':
+                        expr += '-1'
             elif not wait:
                 expr += char
 
