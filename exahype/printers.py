@@ -59,6 +59,10 @@ class CodePrinter(ABC):
         with open(name,'w') as F:
             F.write(self.code)
 
+    def here(self):
+        print(self.code)
+        return
+
 
 class cpp_printer(CodePrinter):
 
@@ -239,9 +243,6 @@ class cpp_printer(CodePrinter):
                             # break
                 
                 out += a
-                    
-                        
-                        
             else:
                 unpack = False
                 k = [key for key,val in self.kernel.item_struct.items() if key in item]
@@ -316,22 +317,42 @@ class cpp_printer(CodePrinter):
         #     l, k = item
         #     self.code = self.code[:l] + "patch][" + self.code[k:]
 
-
-
-
     @override
     def file(self: cpp_printer, name: str = 'test.cpp', header = None):
-        inclusions = '#include "exahype2/UserInterface.h"\n#include "observers/CreateGrid.h"\n#include "observers/CreateGridAndConvergeLoadBalancing.h"\n#include "observers/CreateGridButPostponeRefinement.h"\n#include "observers/InitGrid.h"\n#include "observers/PlotSolution.h"\n#include "observers/TimeStep.h"\n#include "peano4/peano.h"\n#include "repositories/DataRepository.h"\n#include "repositories/SolverRepository.h"\n#include "repositories/StepRepository.h"\n#include "tarch/accelerator/accelerator.h"\n#include "tarch/accelerator/Device.h"\n#include "tarch/logging/CommandLineLogger.h"\n#include "tarch/logging/Log.h"\n#include "tarch/logging/LogFilter.h"\n#include "tarch/logging/Statistics.h"\n#include "tarch/multicore/Core.h"\n#include "tarch/multicore/multicore.h"\n#include "tarch/multicore/otter.h"\n#include "tarch/NonCriticalAssertions.h"\n#include "tarch/timing/Measurement.h"\n#include "tarch/timing/Watch.h"\n#include "tasks/FVRusanovSolverEnclaveTask.h"\n#include "toolbox/loadbalancing/loadbalancing.h"\n\n'
+        inclusions = \
+'''
+#include "exahype2/UserInterface.h"
+#include "observers/CreateGrid.h"
+#include "observers/CreateGridAndConvergeLoadBalancing.h"
+#include "observers/CreateGridButPostponeRefinement.h"
+#include "observers/InitGrid.h"
+#include "observers/PlotSolution.h"
+#include "observers/TimeStep.h"
+#include "peano4/peano.h"
+#include "repositories/DataRepository.h"
+#include "repositories/SolverRepository.h"
+#include "repositories/StepRepository.h"
+#include "tarch/accelerator/accelerator.h"
+#include "tarch/accelerator/Device.h"
+#include "tarch/logging/CommandLineLogger.h"
+#include "tarch/logging/Log.h"
+#include "tarch/logging/LogFilter.h"
+#include "tarch/logging/Statistics.h"
+#include "tarch/multicore/Core.h"
+#include "tarch/multicore/multicore.h"
+#include "tarch/multicore/otter.h"
+#include "tarch/NonCriticalAssertions.h"
+#include "tarch/timing/Measurement.h"
+#include "tarch/timing/Watch.h"
+#include "tasks/FVRusanovSolverEnclaveTask.h"
+#include "toolbox/loadbalancing/loadbalancing.h"\n\n
+'''
         self.code = inclusions + self.code
         if header != None:
             self.code = f'#include "{header}"\n\n' + self.code
         
         # This will perform the writing to the file
         super().file(name, header)
-
-    @override
-    def here(self):
-        print(self.code)
 
 
 class MLIRPrinter(CodePrinter):
@@ -355,9 +376,7 @@ class MLIRPrinter(CodePrinter):
                 shape = []
                 shape.append(self.kernel.n_patches)
                 for d in range(self.kernel.dim):
-                    shape.append(self.kernel.patch_size+2*self.kernel.halo_size)
-                #if self.kernel.item_struct[str(item)] == 0:
-                #    continue
+                    shape.append(self.kernel.patch_size + 2 * self.kernel.halo_size)
                 if str(item) not in self.kernel.items:
                     shape.append(self.kernel.n_real)
                 else:
@@ -376,12 +395,12 @@ class MLIRPrinter(CodePrinter):
 
         #loops
         expr = declarations
-        for l,r,direction,struc in zip(kernel.LHS,kernel.RHS,kernel.directions,kernel.struct_inclusion):
+        for l,r,direction,struc in zip(kernel.LHS, kernel.RHS,kernel.directions, kernel.struct_inclusion):
             if str(l) in kernel.directional_consts:
-                expr.append(ast.Assignment(l,r))
+                expr.append(ast.Assignment(l, r))
             else:
                 # TODO: might be best to offload the loop, per Harrison's code
-                loop = self.loop([l,r], direction, kernel.dim + 1, struc)
+                loop = self.loop([l, r], direction, kernel.dim + 1, struc)
                 expr.append(loop)
 
         #delete temp arrays
@@ -395,7 +414,8 @@ class MLIRPrinter(CodePrinter):
         fp = ast.FunctionPrototype(None, name, params)
         fn = ast.FunctionDefinition.from_FunctionPrototype(fp, body)
 
-        self.code = fn
+        mlir = SymPyToMLIR()
+        self.code = str(mlir.apply(fn))
 
     @override
     def loop(self,expr,direction,below,struct_inclusion):
@@ -404,26 +424,26 @@ class MLIRPrinter(CodePrinter):
         
         #set loop range using direction and struct_inclusion
         if level == 0:
-            r = [0,self.kernel.n_patches]
+            r = [0, self.kernel.n_patches]
         elif below == 0:
             k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)] + [struct_inclusion]
             match min(k):
                 case 0:
-                    r = [0,1]
+                    r = [0, 1]
                 case 1:
                     r = [0, self.kernel.n_real]
                 case 2:
-                    r = [0, self.kernel.n_real+self.kernel.n_aux]
+                    r = [0, self.kernel.n_real + self.kernel.n_aux]
         elif direction == -1:
-            r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
+            r = [0, self.kernel.patch_size + 2 * self.kernel.halo_size]
         elif direction != level and direction >= 0:
-            r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
+            r = [0, self.kernel.patch_size + 2 * self.kernel.halo_size]
         else:
             r = [self.kernel.halo_size, self.kernel.patch_size + self.kernel.halo_size]
 
         #add loop code
         if below > 0: #next loop if have remaining loops
-            body = self.loop(expr,direction,below-1,struct_inclusion)
+            body = self.loop(expr, direction, below - 1, struct_inclusion)
         else: #print loop interior
             if expr[1] == '':
                 body = expr[0]
@@ -432,14 +452,6 @@ class MLIRPrinter(CodePrinter):
 
         return ast.For(idx, Range(r[0], r[1]), body=[ body ])
 
-
-    @override
-    def here(self):
-        mlir = SymPyToMLIR()
-
-        module = mlir.apply(self.code)
-        print(module)
-        return
 
 
 

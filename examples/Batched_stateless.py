@@ -36,7 +36,7 @@ kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right),struct=True)
 kernel.single(Q[0],Q_copy[0])
 
 cpp_printer(kernel).file('test.cpp',header='Functions.h')
-MLIRPrinter(kernel).here()
+MLIRPrinter(kernel).file('test.mlir')
 # cpp_printer(kernel).here()
 
 

@@ -840,9 +840,7 @@ class SymPyFor(SymPyNode):
         body.block(forLoop.body.block)
         body.mlir(body.process(ctx, force))
 
-
     return self.mlir(self.block())
-
 
 
 class SymPyAssignment(SymPyNode):
@@ -883,7 +881,6 @@ class SymPyAssignment(SymPyNode):
       self.lhs().value(self.rhs().mlir())
       self.lhs().process(ctx, force)
       
-
     return self.mlir(block)
 
 
@@ -1238,7 +1235,6 @@ class SymPyVariable(SymPyNode):
         self._value = sympy_expr.value
       case _:
         self._value = None
-
 
   def name(self: SymPyVariable, name: str = None) -> str:
     if name is not None:
