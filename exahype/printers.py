@@ -68,24 +68,15 @@ class cpp_printer(CodePrinter):
 
         self.INDENT = 1
 
-        self.code = f'void {name}({kernel.input_types[0]} {kernel.inputs[0]}'
+        self.code = f'void time_step(double* {kernel.inputs[0]}'
         for i in range(1,len(kernel.inputs)):
-            self.code += f', {kernel.input_types[i]} {kernel.inputs[i]}'
+            self.code += f', double {kernel.inputs[i]}'
         self.code += ')' + ' {\n'
-
-        if len(kernel.literals) > 0:
-            for _ in kernel.literals:
-                self.indent()
-                self.code += _ + '\n'
-            self.code += '\n'
 
         #allocate temp arrays
         for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
-                try:
-                    kernel.parents[str(item)]
-                except KeyError:
-                    self.alloc(item)
+            if str(item) not in kernel.inputs and type(item) == tensor.indexed.IndexedBase:
+                self.alloc(item)
         #allocate directional consts
         for item in kernel.directional_consts:
             self.indent()
@@ -103,12 +94,9 @@ class cpp_printer(CodePrinter):
         #delete temp arrays
         self.code += '\n'
         for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
-                try:
-                    kernel.parents[str(item)]
-                except KeyError:
-                    self.indent()
-                    self.code += f'delete[] {item};\n'
+            if str(item) not in kernel.inputs and type(item) == tensor.indexed.IndexedBase:
+                self.indent()
+                self.code += f'delete[] {item};\n'
         self.code += '}\n'
         self.parse()
 
@@ -208,8 +196,9 @@ class cpp_printer(CodePrinter):
 
         return out[:len(out)-1]
 
+
     def Cppify(self,item):
-        expr = [str(item)]
+        expr = [str(item)]#_ for _ in str(item).partition('[')]
         active = True
         while active:
             active = False
@@ -249,7 +238,10 @@ class cpp_printer(CodePrinter):
                             a = a.replace(b,f'&{str(b)}')
                             # break
                 
-                out += self.heritage(a)
+                out += a
+                    
+                        
+                        
             else:
                 unpack = False
                 k = [key for key,val in self.kernel.item_struct.items() if key in item]
@@ -389,9 +381,7 @@ class MLIRPrinter(CodePrinter):
                 expr.append(ast.Assignment(l,r))
             else:
                 # TODO: might be best to offload the loop, per Harrison's code
-                print(f"> {l} = {r} {direction} {kernel.dim+1} {struc}")
                 loop = self.loop([l,r], direction, kernel.dim + 1, struc)
-                print(f"loop {loop}")
                 expr.append(loop)
 
         #delete temp arrays
@@ -403,7 +393,7 @@ class MLIRPrinter(CodePrinter):
 
         body = expr
         fp = ast.FunctionPrototype(None, name, params)
-        fn = ast.FunctionDefinition.from_FunctionPrototype(fp, expr)
+        fn = ast.FunctionDefinition.from_FunctionPrototype(fp, body)
 
         self.code = fn
 
@@ -439,7 +429,7 @@ class MLIRPrinter(CodePrinter):
                 body = expr[0]
             else:
                 body = ast.Assignment(expr[0], expr[1])
-       
+
         return ast.For(idx, Range(r[0], r[1]), body=[ body ])
 
 
