@@ -44,7 +44,7 @@ from xdsl import ir
 from xdsl.builder import ImplicitBuilder
 from xdsl.dialects import affine, arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.experimental import math
-
+#from exahype import TypedFunction
 '''
  Classes to support the transformation of a SymPy AST to MLIR standard dialects.
 
@@ -53,35 +53,6 @@ from xdsl.dialects.experimental import math
 
  NOTE: This *isn't* an xDSL dialect 
 '''
-
-# Add a return type to a SymPy Function class
-class TypedFunction(sympy.Function):
-
-  @classmethod
-  def eval(cls, arg):
-    return sympy.Function.eval(arg)
-
-  def __new__(cls, *args, **options):
-    func = sympy.Function(*args,**options)
-    setattr(func, 'return_type', None)
-    setattr(func, 'parameter_types', None)
-    func.returnType = types.MethodType(cls.returnType, func)
-    func.parameterTypes = types.MethodType(cls.parameterTypes, func)
-    return func
-
-  def _eval_evalf(self, prec):
-    return super()._eval_evalf(prec)
-
-  def returnType(self: TypedFunction, returnType = None):
-    if returnType is not None:
-      self.return_type = returnType
-    return self.return_type
-
-  def parameterTypes(self: TypedFunction, parameterTypes: List = None):
-    if parameterTypes is not None:
-      self.parameter_types = parameterTypes
-    return self.parameter_types
-
 
 @dataclasses.dataclass
 class SSAValueCtx:
@@ -1146,7 +1117,7 @@ class SymPyDeclaration(SymPyNode):
           shape.append(-1)
 
       with ImplicitBuilder(self.block()):
-        pntr = memref.Alloc.get(type, type.get_bitwidth, shape, dynamic_sizes=dims)
+        pntr = memref.Alloc.get(type, type.bitwidth, shape, dynamic_sizes=dims)
         pntr.name_hint = self.name()
         ctx[self.name()] = (None, self.typeOperation(), pntr)
 
@@ -1155,9 +1126,9 @@ class SymPyDeclaration(SymPyNode):
       with ImplicitBuilder(self.block()):
         match type:
           case builtin.f64:
-            const = arith.Constant.create(properties={"value": builtin.FloatAttr(float(value), type.get_bitwidth)}, result_types=[type])
+            const = arith.Constant.create(properties={"value": builtin.FloatAttr(float(value), type.bitwidth)}, result_types=[type])
           case builtin.f32:
-            const = arith.Constant.create(properties={"value": builtin.FloatAttr(float(value), type.get_bitwidth)}, result_types=[type])
+            const = arith.Constant.create(properties={"value": builtin.FloatAttr(float(value), type.bitwidth)}, result_types=[type])
           case builtin.i64:
             const = arith.Constant.create(properties={"value": builtin.IntegerAttr.from_int_and_width(int(value), 64)}, result_types=[type])
           case builtin.i32: 

@@ -1,10 +1,10 @@
 import sys
-sys.path.insert(1,"/home/tvwh77/exahype/DSL/ExaHyPE") #this is for me to use the frontend on my machine, change for your own usage
 
 from sympy import IndexedBase
 from sympy.codegen.ast import integer, real, none
 from exahype.frontend import general_builder
-from exahype.printers import cpp_printer, MLIRPrinter
+from exahype.printers import cpp_printer
+from exahype.MLIRPrinter import MLIRPrinter
 
 
 kernel = general_builder(dim=2,patch_size=4,halo_size=1,n_real=5,n_aux=5)

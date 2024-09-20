@@ -1,7 +1,6 @@
-# from exahype. import #modules from Maurice
 from sympy import *
 from sympy.codegen.ast import integer, real, none
-from exahype import sympy
+from exahype.typedfunction import TypedFunction
 
 def viable(dim,patch_size,halo_size):
     if dim not in [2,3]:
@@ -96,7 +95,7 @@ class general_builder:
         if parent != None:
             self.parents[expr] = str(parent)
         self.functions.append(expr)
-        func = sympy.TypedFunction(expr)
+        func = TypedFunction(expr)
         func.returnType(return_type)
         func.parameterTypes(parameter_types)
         self.all_items[expr] = func
