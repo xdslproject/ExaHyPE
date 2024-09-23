@@ -4,6 +4,7 @@ from typing_extensions import override
 import types
 import sympy 
 
+
 # Add a return type to a SymPy Function class
 class TypedFunction(sympy.Function):
 
