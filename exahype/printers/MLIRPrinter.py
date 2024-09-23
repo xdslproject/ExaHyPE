@@ -35,9 +35,9 @@
 from typing_extensions import override
 from sympy import *
 from sympy.codegen import ast
-from exahype import TypedFunction
-from exahype import SymPyToMLIR
-from exahype.printers import CodePrinter
+from ..TypedFunction import TypedFunction
+from ..SymPyToMLIR import SymPyToMLIR
+from .CodePrinter import CodePrinter
 
 class MLIRPrinter(CodePrinter):
 

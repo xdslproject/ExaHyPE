@@ -40,7 +40,7 @@ import numpy as np
 from sympy import tensor, core, Range
 from sympy.core import numbers
 from sympy.codegen import ast
-from exahype import TypedFunction
+from ..TypedFunction import TypedFunction
 
 
 class CodePrinter(ABC):

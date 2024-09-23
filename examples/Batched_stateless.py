@@ -2,7 +2,7 @@ import sys
 
 from sympy import IndexedBase
 from sympy.codegen.ast import integer, real, none
-from exahype.KernelBuilder import KernelBuilder 
+from exahype import KernelBuilder 
 from exahype.printers import CPPPrinter, MLIRPrinter
 
 
