@@ -2,6 +2,7 @@ from sympy import *
 from sympy.codegen.ast import integer, real, none
 from exahype import TypedFunction
 
+
 def viable(dim,patch_size,halo_size):
     if dim not in [2,3]:
         return False
