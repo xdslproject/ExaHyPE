@@ -1,6 +1,6 @@
 from sympy import *
 from sympy.codegen.ast import integer, real, none
-from exahype.typedfunction import TypedFunction
+from exahype import TypedFunction
 
 def viable(dim,patch_size,halo_size):
     if dim not in [2,3]:
@@ -11,7 +11,7 @@ def viable(dim,patch_size,halo_size):
         return False
     return True
 
-class general_builder:
+class KernelBuilder:
     def __init__(self,dim,patch_size,halo_size,n_real,n_aux,n_patches=1):
         if not viable(dim,patch_size,halo_size):
             raise Exception('check viability of inputs')

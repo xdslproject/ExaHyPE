@@ -2,12 +2,11 @@ import sys
 
 from sympy import IndexedBase
 from sympy.codegen.ast import integer, real, none
-from exahype.frontend import general_builder
-from exahype.printers import cpp_printer
-from exahype.MLIRPrinter import MLIRPrinter
+from exahype.KernelBuilder import KernelBuilder 
+from exahype.printers import CPPPrinter, MLIRPrinter
 
 
-kernel = general_builder(dim=2,patch_size=4,halo_size=1,n_real=5,n_aux=5)
+kernel = KernelBuilder(dim=2,patch_size=4,halo_size=1,n_real=5,n_aux=5)
 
 Q           = kernel.item('Q')
 Q_copy      = kernel.item('Q_copy')
@@ -35,8 +34,7 @@ kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right),struct=True)
 
 kernel.single(Q[0],Q_copy[0])
 
-cpp_printer(kernel).file('test.cpp',header='Functions.h')
+CPPPrinter(kernel).file('test.cpp',header='Functions.h')
 MLIRPrinter(kernel).file('test.mlir')
-# cpp_printer(kernel).here()
 
 

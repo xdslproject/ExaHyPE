@@ -44,7 +44,7 @@ from xdsl import ir
 from xdsl.builder import ImplicitBuilder
 from xdsl.dialects import affine, arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.experimental import math
-#from exahype import TypedFunction
+
 '''
  Classes to support the transformation of a SymPy AST to MLIR standard dialects.
 

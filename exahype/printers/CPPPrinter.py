@@ -40,31 +40,9 @@ import numpy as np
 from sympy import tensor, core, Range
 from sympy.core import numbers
 from sympy.codegen import ast
-from exahype.typedfunction import TypedFunction
+from exahype.printers import CodePrinter
 
-class CodePrinter(ABC):
-
-    def __init__(self: CodePrinter, kernel, name: str):
-        self.kernel = kernel
-
-    @abstractmethod
-    def loop(self: CodePrinter, expr, direction, below, struct_inclusion):
-        pass
-
-    @abstractmethod
-    def here(self):
-        pass
-
-    def file(self: cpp_printer, name: str, header = None):
-        with open(name,'w') as F:
-            F.write(self.code)
-
-    def here(self):
-        print(self.code)
-        return
-
-
-class cpp_printer(CodePrinter):
+class CPPPrinter(CodePrinter):
 
     @override
     def __init__(self, kernel, name: str = "time_step"):
