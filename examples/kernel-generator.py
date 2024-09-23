@@ -1,10 +1,9 @@
 import sys
-sys.path.insert(1,"/home/tvwh77/exahype/DSL/ExaHyPE") #this is for me to use the frontend on my machine, change for your own usage
 
-from exahype.frontend import general_builder
-from exahype.printers import cpp_printer
+from exahype import KernelBuilder
+from exahype.printers import CPPPrinter
 
-kernel = general_builder(dim=2,patch_size=4,halo_size=1,n_real=4,n_aux=0)
+kernel = KernelBuilder(dim=2,patch_size=4,halo_size=1,n_real=4,n_aux=0)
 
 Data            = kernel.item('patchData',in_type='::exahype2::CellData&')
 timer           = kernel.const('timingComputeKernel',in_type='::tarch::timing::Measurement&')
@@ -45,5 +44,5 @@ right       = -Max(tmp_eig[1],tmp_eig[0])*(Q[0]-Q[1])
 kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right),struct=True)
 kernel.single(Q[0],Q_copy[0])
 
-cpp_printer(kernel).file('generated_kernel.cpp',header='Functions.h')
+CPPPrinter(kernel).file('generated_kernel.cpp',header='Functions.h')
 

@@ -65,6 +65,7 @@ class KernelBuilder:
         self.literals = []              #lines written in c++
         self.parents = {}               #which items are parents of which items
         self.inputs = []
+        self.input_types = []
         self.items = []                 #stored as strings
         self.directional_items = []     #stored as strings
         self.directional_consts = {}    #stores values of the const for each direction
@@ -94,9 +95,10 @@ class KernelBuilder:
             return symbols(expr)
         if define != None:
             self.literals.append(define)
+            return symbols(expr)
 
         self.inputs.append(expr)
-        self.all_items[expr] = symbols(expr, real=True)
+        self.input_types.append(in_type)
         return symbols(expr, real=True)
 
     def directional_const(self,expr,vals):
@@ -106,12 +108,14 @@ class KernelBuilder:
         self.all_items[expr] = symbols(expr, real=True)
         return symbols(expr, real=True)
         
-    def item(self,expr,struct=True):
+    def item(self,expr,struct=True,in_type="double*",parent=None):
         self.items.append(expr)
         self.all_items[expr] = IndexedBase(expr, real=True)
         if len(self.items) == 1:
-            self.inputs.append(expr)# = expr
+            self.input_types.append(in_type)
         self.item_struct[expr] = 0 + struct*2
+        if parent != None:
+            self.parents[expr] = str(parent)
         return IndexedBase(expr, real=True)
 
     def directional_item(self,expr,struct=True):
@@ -185,10 +189,6 @@ class KernelBuilder:
 
             if char == '[':
                 wait = True
-                if direction >= 0 and word in self.directional_items:
-                    thing = ['_patch','_x','_y','_z']
-                    expr += thing[direction]
-                    word += thing[direction]
                 expr += char
 
                 for j,index in enumerate(self.indexes):

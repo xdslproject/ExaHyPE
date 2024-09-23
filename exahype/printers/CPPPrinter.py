@@ -50,15 +50,25 @@ class CPPPrinter(CodePrinter):
 
         self.INDENT = 1
 
-        self.code = f'void time_step(double* {kernel.inputs[0]}'
+        self.code = f'void {name}({kernel.input_types[0]} {kernel.inputs[0]}'
         for i in range(1,len(kernel.inputs)):
-            self.code += f', double {kernel.inputs[i]}'
+            self.code += f', {kernel.input_types[i]} {kernel.inputs[i]}'
         self.code += ')' + ' {\n'
+
+        if len(kernel.literals) > 0:
+            for _ in kernel.literals:
+                self.indent()
+                self.code += _ + '\n'
+            self.code += '\n'
 
         #allocate temp arrays
         for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and type(item) == tensor.indexed.IndexedBase:
-                self.alloc(item)
+            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
+                try:
+                    kernel.parents[str(item)]
+                except KeyError:
+                    self.alloc(item)
+                    
         #allocate directional consts
         for item in kernel.directional_consts:
             self.indent()
@@ -76,9 +86,12 @@ class CPPPrinter(CodePrinter):
         #delete temp arrays
         self.code += '\n'
         for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and type(item) == tensor.indexed.IndexedBase:
-                self.indent()
-                self.code += f'delete[] {item};\n'
+            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
+                try:
+                    kernel.parents[str(item)]
+                except KeyError:
+                    self.indent()
+                    self.code += f'delete[] {item};\n'
         self.code += '}\n'
         self.parse()
 
@@ -96,7 +109,6 @@ class CPPPrinter(CodePrinter):
         #set loop range using direction and struct_inclusion
         if level == 0:
             r = [0,self.kernel.n_patches]
-            # print(str(expr))
         elif below == 0:
             k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)] + [struct_inclusion]
             match min(k):
@@ -108,7 +120,6 @@ class CPPPrinter(CodePrinter):
                     r = [0, self.kernel.n_real+self.kernel.n_aux]
         elif direction == -1:
             r = [self.kernel.halo_size, self.kernel.patch_size + self.kernel.halo_size]
-            # r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
         elif direction != level and direction >= 0:
             r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
         else:
@@ -180,7 +191,7 @@ class CPPPrinter(CodePrinter):
 
 
     def Cppify(self,item):
-        expr = [str(item)]#_ for _ in str(item).partition('[')]
+        expr = [str(item)]
         active = True
         while active:
             active = False
@@ -218,9 +229,8 @@ class CPPPrinter(CodePrinter):
                     for b in self.kernel.items + self.kernel.directional_items:
                         if b in a:
                             a = a.replace(b,f'&{str(b)}')
-                            # break
                 
-                out += a
+                out += self.heritage(a)
             else:
                 unpack = False
                 k = [key for key,val in self.kernel.item_struct.items() if key in item]
@@ -276,7 +286,7 @@ class CPPPrinter(CodePrinter):
                         j = 0
                     else:
                         l = i + 1
-                        while self.code[l].isalpha():# not in ['[','*',',',' ']:
+                        while self.code[l].isalpha():
                             l += 1
                         k = l
                         if self.code[l] == '[':
@@ -291,9 +301,6 @@ class CPPPrinter(CodePrinter):
                         offset += l - k + 7
                         j = 0
 
-        # for item in replaces:
-        #     l, k = item
-        #     self.code = self.code[:l] + "patch][" + self.code[k:]
 
     @override
     def file(self: cpp_printer, name: str = 'test.cpp', header = None):
