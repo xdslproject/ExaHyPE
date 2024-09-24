@@ -45,85 +45,96 @@ from .CodePrinter import CodePrinter
 class CPPPrinter(CodePrinter):
 
     @override
-    def __init__(self, kernel, name: str = "time_step"):
-        super().__init__(kernel, name)
+    def __init__(self: CPPPrinter, kernel: KernelBuilder, function_name: str = "time_step"):
+        super().__init__(kernel, function_name=function_name)
 
         self.INDENT = 1
 
-        self.code = f'void {name}({kernel.input_types[0]} {kernel.inputs[0]}'
-        for i in range(1,len(kernel.inputs)):
-            self.code += f', {kernel.input_types[i]} {kernel.inputs[i]}'
+        if (self.kernel().input_types is not None) and (len(self.kernel().input_types) > 0):
+            self.code = f'void {self.functionName()}({self.kernel().input_types[0]} {self.kernel().inputs[0]}'
+        else:
+            if (self.kernel().inputs is not None) and (len(self.kernel().inputs) > 0):
+                self.code = f'void {self.functionName()}(auto {self.kernel().inputs[0]}'
+            else:
+                self.code = f'void {self.functionName()}('
+        for i in range(1,len(self.kernel().inputs)):
+            self.code += f', {self.kernel().input_types[i]} {self.kernel().inputs[i]}'
         self.code += ')' + ' {\n'
 
-        if len(kernel.literals) > 0:
-            for _ in kernel.literals:
+        if len(self.kernel().literals) > 0:
+            for _ in self.kernel().literals:
                 self.indent()
                 self.code += _ + '\n'
             self.code += '\n'
 
         #allocate temp arrays
-        for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
+        for item in self.kernel().all_items.values():
+            if str(item) not in self.kernel().inputs and isinstance(item, tensor.indexed.IndexedBase):
                 try:
-                    kernel.parents[str(item)]
+                    self.kernel().parents[str(item)]
                 except KeyError:
                     self.alloc(item)
                     
         #allocate directional consts
-        for item in kernel.directional_consts:
+        for item in self.kernel().directional_consts:
             self.indent()
-            self.code += f'double {kernel.all_items[item]};\n'
+            self.code += f'double {self.kernel().all_items[item]};\n'
         self.code += '\n'
 
         #loops
-        for l,r,direction,struc in zip(kernel.LHS,kernel.RHS,kernel.directions,kernel.struct_inclusion):
-            if str(l) in kernel.directional_consts:
+        for l,r,direction,struc in zip(self.kernel().LHS,self.kernel().RHS,self.kernel().directions,self.kernel().struct_inclusion):
+            if str(l) in self.kernel().directional_consts:
                 self.indent()
                 self.code += f'{l} = {r};\n'
             else:
-                self.loop([l,r],direction,kernel.dim+1,struc)
+                self.loop([l,r],direction,self.kernel().dim+1,struc)
 
         #delete temp arrays
         self.code += '\n'
-        for item in kernel.all_items.values():
-            if str(item) not in kernel.inputs and isinstance(item, tensor.indexed.IndexedBase):
+        for item in self.kernel().all_items.values():
+            if str(item) not in self.kernel().inputs and isinstance(item, tensor.indexed.IndexedBase):
                 try:
-                    kernel.parents[str(item)]
+                    self.kernel().parents[str(item)]
                 except KeyError:
                     self.indent()
                     self.code += f'delete[] {item};\n'
         self.code += '}\n'
         self.parse()
 
-    def indent(self,val=0,force=False):
+    def indent(self: CPPPrinter, val: int = 0, force: bool = False):
         self.INDENT += val
         if val == 0 or force:
             self.code += (self.INDENT * "\t")
 
     @override
-    def loop(self,expr,direction,below,struct_inclusion):
-        level = self.kernel.dim + 1 - below
-        idx = self.kernel.indexes[level]
+    def loop(self: CPPPrinter, expr: List, direction: int, below: int, struct_inclusion: int):
+        level = self.kernel().dim + 1 - below
+        idx = self.kernel().indexes[level]
         
-
+        extra_condition = ('i +' in str(expr[0]) or 'i -' in str(expr[0]) or 'j +' in str(expr[0]) or 'j -' in str(expr[0]) or 'k +' in str(expr[0]) or 'k -' in str(expr[0]) or 'i +' in str(expr[1]) or 'i -' in str(expr[1]) or 'j +' in str(expr[1]) or 'j -' in str(expr[1]) or 'k +' in str(expr[1]) or 'k -' in str(expr[1]))
         #set loop range using direction and struct_inclusion
         if level == 0:
-            r = [0,self.kernel.n_patches]
+            r = [0,self.kernel().n_patches]
         elif below == 0:
-            k = [val for key,val in self.kernel.item_struct.items() if key in str(expr)] + [struct_inclusion]
+            k = [val for key,val in self.kernel().item_struct.items() if key in str(expr)] + [struct_inclusion]
             match min(k):
                 case 0:
                     r = [0,1]
                 case 1:
-                    r = [0, self.kernel.n_real]
+                    r = [0, self.kernel().n_real]
                 case 2:
-                    r = [0, self.kernel.n_real+self.kernel.n_aux]
+                    r = [0, self.kernel().n_real+self.kernel().n_aux]
+        elif expr[0] == self.kernel().LHS[-1]:
+            r = [self.kernel().halo_size, self.kernel().patch_size + self.kernel().halo_size]
         elif direction == -1:
-            r = [self.kernel.halo_size, self.kernel.patch_size + self.kernel.halo_size]
-        elif direction != level and direction >= 0:
-            r = [0, self.kernel.patch_size + 2*self.kernel.halo_size]
+            r = [self.kernel().halo_size, self.kernel().patch_size + self.kernel().halo_size]
+            # r = [0, self.kernel().patch_size + 2*self.kernel().halo_size]
+        elif direction == level and direction >=0 and extra_condition:
+            r = [self.kernel().halo_size, self.kernel().patch_size + self.kernel().halo_size]
+        elif direction == level and direction >= 0:
+            r = [0, self.kernel().patch_size + 2*self.kernel().halo_size]
         else:
-            r = [self.kernel.halo_size, self.kernel.patch_size + self.kernel.halo_size]
+            r = [self.kernel().halo_size, self.kernel().patch_size + self.kernel().halo_size]
 
         
         #add loop code
@@ -155,20 +166,20 @@ class CPPPrinter(CodePrinter):
             self.indent()
             self.code += "}\n"
         
-    def alloc(self,item):
+    def alloc(self: CPPPrinter, item: tensor.indexed.IndexedBase):
         self.indent()
-        self.code += f'double *{item} = new double[{self.kernel.n_patches}'
-        for d in range(self.kernel.dim):
-            self.code += f'*{self.kernel.patch_size+2*self.kernel.halo_size}'
-        if self.kernel.item_struct[str(item)] == 0:
+        self.code += f'double *{item} = new double[{self.kernel().n_patches}'
+        for d in range(self.kernel().dim):
+            self.code += f'*{self.kernel().patch_size+2*self.kernel().halo_size}'
+        if self.kernel().item_struct[str(item)] == 0:
             self.code += ']'
-        elif str(item) not in self.kernel.items:
-            self.code += f'*{self.kernel.n_real}]'
+        elif str(item) not in self.kernel().items:
+            self.code += f'*{self.kernel().n_real}]'
         else:
-            self.code += f'*{self.kernel.n_real + self.kernel.n_aux}]'
+            self.code += f'*{self.kernel().n_real + self.kernel().n_aux}]'
         self.code += ';\n'
 
-    def heritage(self,item): #for inserting parent classes
+    def heritage(self: CPPPrinter, item: str): #for inserting parent classes
         word = ''
         out = ''
         item += '1'
@@ -176,8 +187,8 @@ class CPPPrinter(CodePrinter):
             if a.isalpha():
                 word += a
             else:
-                if word in self.kernel.parents.keys():
-                    upper = self.kernel.parents[word]
+                if word in self.kernel().parents.keys():
+                    upper = self.kernel().parents[word]
                     if upper[-1] == ":":
                         out += f'{upper}{word}'
                     else:
@@ -190,7 +201,7 @@ class CPPPrinter(CodePrinter):
         return out[:len(out)-1]
 
 
-    def Cppify(self,item):
+    def Cppify(self: CPPPrinter, item: core.basic.Basic):
         expr = [str(item)]
         active = True
         while active:
@@ -221,32 +232,32 @@ class CPPPrinter(CodePrinter):
                     in_func = False
                 
                 item = a
-                k = [str(val) for val in self.kernel.functions if val in a]
+                k = [str(val) for val in self.kernel().functions if val in a]
                 if len(k) != 0:
                     in_func = True
                 
                 if in_func:
-                    for b in self.kernel.items + self.kernel.directional_items:
+                    for b in self.kernel().items + self.kernel().directional_items:
                         if b in a:
                             a = a.replace(b,f'&{str(b)}')
                 
                 out += self.heritage(a)
             else:
                 unpack = False
-                k = [key for key,val in self.kernel.item_struct.items() if key in item]
-                match self.kernel.item_struct[k[0]]:
+                k = [key for key,val in self.kernel().item_struct.items() if key in item]
+                match self.kernel().item_struct[k[0]]:
                     case 0:
                         leap = 1
                     case 1:
-                        leap = self.kernel.n_real
+                        leap = self.kernel().n_real
                     case 2:
-                        leap = self.kernel.n_real + self.kernel.n_aux
-                if k[0] == self.kernel.items[1]:
-                    size = self.kernel.patch_size
+                        leap = self.kernel().n_real + self.kernel().n_aux
+                if k[0] == self.kernel().items[1]:
+                    size = self.kernel().patch_size
                 else:
-                    size = self.kernel.patch_size + 2*self.kernel.halo_size
+                    size = self.kernel().patch_size + 2*self.kernel().halo_size
                 strides = [leap*size**2,leap*size,leap]
-                if self.kernel.dim == 3:
+                if self.kernel().dim == 3:
                     strides = [leap*size**3] + strides
                 i = 0
                 for char in a.split(','):
@@ -255,7 +266,7 @@ class CPPPrinter(CodePrinter):
                         out += ' + '
                     if i < len(strides):
                         out += f'{strides[i]}*'
-                    if char in self.kernel.all_items:
+                    if char in self.kernel().all_items:
                         out += f'{char}'
                     else:
                         out += f'({char})'
@@ -264,8 +275,11 @@ class CPPPrinter(CodePrinter):
                 
         return out
 
-    def parse(self):
-        mother = str(self.kernel.inputs[0])
+    def parse(self: CPPPrinter):
+        if (self.kernel().inputs is not None) and (len(self.kernel().inputs) > 0):
+            mother = str(self.kernel().inputs[0])
+        else:
+            return
         j = 0
         begin = False
         offset = 0
@@ -303,7 +317,7 @@ class CPPPrinter(CodePrinter):
 
 
     @override
-    def file(self: cpp_printer, name: str = 'test.cpp', header = None):
+    def file(self: CPPPrinter, file_name: str = 'test.cpp', header_file_name: str = None):
         inclusions = \
 '''
 #include "exahype2/UserInterface.h"
@@ -333,11 +347,11 @@ class CPPPrinter(CodePrinter):
 #include "toolbox/loadbalancing/loadbalancing.h"\n\n
 '''
         self.code = inclusions + self.code
-        if header != None:
-            self.code = f'#include "{header}"\n\n' + self.code
+        if header_file_name is not None:
+            self.code = f'#include "{header_file_name}"\n\n' + self.code
         
         # This will perform the writing to the file
-        super().file(name, header)
+        super().file(file_name, header_file_name)
 
 
 

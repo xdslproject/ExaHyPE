@@ -41,27 +41,32 @@ from sympy import tensor, core, Range
 from sympy.core import numbers
 from sympy.codegen import ast
 from ..TypedFunction import TypedFunction
-
+from ..KernelBuilder import KernelBuilder
 
 class CodePrinter(ABC):
 
-    def __init__(self: CodePrinter, kernel, name: str):
-        self.kernel = kernel
+    def __init__(self: CodePrinter, kernel: KernelBuilder, function_name: str):
+        self._kernel = kernel
+        self._functionName = function_name
 
-    @abstractmethod
-    def loop(self: CodePrinter, expr, direction, below, struct_inclusion):
-        pass
+    def kernel(self: CodePrinter, kernel: KernelBuilder = None) -> KernelBuilder:
+        if kernel is not None:
+            self._kernel = kernel
+        return self._kernel    
 
-    @abstractmethod
-    def here(self):
-        pass
+    def functionName(self: CodePrinter, function_name: str = None) -> str:
+        if function_name is not None:
+            self._functionName = function_name
+        return self._functionName    
 
-    def file(self: cpp_printer, name: str, header = None):
-        with open(name,'w') as F:
+    def file(self: CodePrinter, file_name: str, header_file_name: str = None):
+        with open(file_name,'w') as F:
             F.write(self.code)
 
-    def here(self):
+    def here(self: CodePrinter):
         print(self.code)
-        return
 
+    @abstractmethod
+    def loop(self: CPPPrinter, expr: List, direction: int, below: int, struct_inclusion: int):
+        pass
 

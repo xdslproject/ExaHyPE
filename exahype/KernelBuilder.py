@@ -32,12 +32,13 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # -----------------------------------------------------------------------------
 
-from sympy import *
+from __future__ import annotations
+from sympy import core, tensor, symbols, Idx, IndexedBase, sympify
 from sympy.codegen.ast import integer, real, none
 from .TypedFunction import TypedFunction
 
 
-def viable(dim,patch_size,halo_size):
+def viable(dim: int, patch_size: int, halo_size: int):
     if dim not in [2,3]:
         return False
     if patch_size < 1:
@@ -47,7 +48,7 @@ def viable(dim,patch_size,halo_size):
     return True
 
 class KernelBuilder:
-    def __init__(self,dim,patch_size,halo_size,n_real,n_aux,n_patches=1):
+    def __init__(self: KernelBuilder, dim: int, patch_size: int, halo_size: int, n_real: int, n_aux: int, n_patches: int = 1):
         if not viable(dim,patch_size,halo_size):
             raise Exception('check viability of inputs')
         self.dim = dim
@@ -88,7 +89,7 @@ class KernelBuilder:
         self.const('n_real',define=f'int n_real = {n_real};')
         self.const('n_aux',define=f'int n_aux = {n_aux};')
 
-    def const(self,expr,in_type="double",parent=None,define=None):
+    def const(self: KernelBuilder, expr: str, in_type: str = "double", parent: core.basic.Basic = None, define = None):
         self.all_items[expr] = symbols(expr)
         if parent != None:
             self.parents[expr] = str(parent)
@@ -101,14 +102,14 @@ class KernelBuilder:
         self.input_types.append(in_type)
         return symbols(expr, real=True)
 
-    def directional_const(self,expr,vals):
+    def directional_const(self: KernelBuilder, expr: str, vals: List):
         if len(vals) != self.dim:
             raise Exception("directional constant must have values for each direction")
         self.directional_consts[expr] = vals
         self.all_items[expr] = symbols(expr, real=True)
         return symbols(expr, real=True)
         
-    def item(self,expr,struct=True,in_type="double*",parent=None):
+    def item(self: KernelBuilder, expr: str, struct: bool = True, in_type: str = "double*", parent = None):
         self.items.append(expr)
         self.all_items[expr] = IndexedBase(expr, real=True)
         if len(self.items) == 1:
@@ -118,7 +119,7 @@ class KernelBuilder:
             self.parents[expr] = str(parent)
         return IndexedBase(expr, real=True)
 
-    def directional_item(self,expr,struct=True):
+    def directional_item(self: KernelBuilder, expr: str,struct: bool = True):
         self.directional_items.append(expr)
         self.item_struct[expr] = 0 + struct*1
         tmp = ''
@@ -130,7 +131,7 @@ class KernelBuilder:
             self.item_struct[tmp] = 0 + struct*1
         return IndexedBase(expr, real=True)
 
-    def function(self, expr, parent=None, parameter_types = [], return_type = none, ):
+    def function(self: KernelBuilder, expr: str, parent: core.basic.Basic = None, parameter_types: List = [], return_type: ast.Token = none, ):
         if parent != None:
             self.parents[expr] = str(parent)
         self.functions.append(expr)
@@ -140,14 +141,14 @@ class KernelBuilder:
         self.all_items[expr] = func
         return func
 
-    def single(self,LHS,RHS='',direction=-1,struct=False):
+    def single(self: KernelBuilder, LHS: core.basic.Basic, RHS: core.basic.Basic = None, direction: int = -1, struct: bool = False):
         if struct:
             self.struct_inclusion.append(1)
         elif str(type(LHS)) in self.functions or str(type(RHS)) in self.functions:
             self.struct_inclusion.append(0)
         elif str(LHS).partition('[')[0] in self.inputs:
             self.struct_inclusion.append(2)
-        elif self.RHS == '':
+        elif self.RHS is None:
             self.struct_inclusion.append(0)
         else:
             tmp = [val for key,val in self.item_struct.items() if key in (str(LHS)+str(RHS))]
@@ -161,7 +162,7 @@ class KernelBuilder:
         self.LHS.append(self.index(LHS,direction))
         self.RHS.append(self.index(RHS,direction))
 
-    def directional(self,LHS,RHS='',struct=False):
+    def directional(self: KernelBuilder, LHS: core.basic.Basic, RHS: core.basic.Basic = None, struct: bool = False):
         for i in range(self.dim):
             for j, key in enumerate(self.directional_consts):
                 if key in str(LHS) or key in str(RHS):
@@ -171,7 +172,7 @@ class KernelBuilder:
                     self.directions.append(-1)
             self.single(LHS,RHS,i+1,struct)
 
-    def index(self,expr_in,direction=-1):
+    def index(self: KernelBuilder, expr_in: str , direction: int = -1):
         if expr_in == '':
             return ''
         

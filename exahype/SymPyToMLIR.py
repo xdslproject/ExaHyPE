@@ -885,15 +885,17 @@ class SymPyFunctionDefinition(SymPyNode):
     self._noBody = False
     self._external = False
     # Attach the 'body' node directly
-    self.body(SymPyNode.build(self.sympy().body, self))
-    for child in self.sympy().parameters:
-      if child == self.body():
-        pass
-      else:    
-        if isinstance(child, ast.String):
-          pass
-        else: 
-          self.addChild(SymPyNode.build(child, self)) 
+    if self.sympy() is not None:
+      self.body(SymPyNode.build(self.sympy().body, self))
+      if not isinstance(self.sympy().parameters, ast.NoneToken):
+        for child in self.sympy().parameters:
+          if child == self.body():
+            pass
+          else:    
+            if isinstance(child, ast.String):
+              pass
+            else: 
+              self.addChild(SymPyNode.build(child, self)) 
     self._argTypes = None
 
   # NOTE: override 'walk()' to include separate 'body' node

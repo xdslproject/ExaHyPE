@@ -1,7 +1,7 @@
 import sys
 
 from exahype import KernelBuilder
-from exahype.printers import CPPPrinter
+from exahype.printers import CPPPrinter, MLIRPrinter
 
 kernel = KernelBuilder(dim=2,patch_size=4,halo_size=1,n_real=4,n_aux=0)
 
@@ -15,7 +15,7 @@ tmp_eig         = kernel.directional_item('tmp_eigen',struct=False)
 
 dt              = kernel.const('dt',parent=Data)
 t              = kernel.const('t',parent=Data)
-normal          = kernel.directional_const('normal',[0,1])
+normal          = kernel.directional_const('normal',(0,1))
 cellCentre      = kernel.const('cellCentre',parent=Data)
 cellSize        = kernel.const('cellSize',parent=Data)
 
@@ -44,5 +44,6 @@ right       = -Max(tmp_eig[1],tmp_eig[0])*(Q[0]-Q[1])
 kernel.directional(Q_copy[0], Q_copy[0] + 0.5*dt*(left-right),struct=True)
 kernel.single(Q[0],Q_copy[0])
 
-CPPPrinter(kernel).file('generated_kernel.cpp',header='Functions.h')
+#MLIRPrinter(kernel).file(file_name="test2.mlir")
+CPPPrinter(kernel).file(file_name='generated_kernel.cpp',header_file_name='Functions.h')
 
